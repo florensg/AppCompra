@@ -1,0 +1,20 @@
+# Dependencias y builds
+**/node_modules/
+**/dist/
+
+# Cache local
+.npm-cache/
+
+# Variables locales
+*.local
+*.env
+*.env.*
+
+# Datos personales
+COMPRAS Supermercado.xlsx
+
+# Sistema/editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

@@ -1,0 +1,281 @@
+:root {
+  --bg: #f8fafc;
+  --surface: #ffffff;
+  --ink: #0f172a;
+  --soft: #64748b;
+  --brand: #14532d;
+  --brand-soft: #dcfce7;
+  --line: #e2e8f0;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  background: linear-gradient(160deg, #f8fafc 0%, #ecfeff 100%);
+  color: var(--ink);
+}
+
+.app-shell {
+  max-width: 860px;
+  margin: 0 auto;
+  min-height: 100vh;
+  padding: 14px;
+}
+
+.top-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.top-header h1 {
+  margin: 0;
+  font-size: 1.5rem;
+}
+
+.top-header p {
+  margin: 6px 0 0;
+  color: var(--soft);
+}
+
+.badge {
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.badge.online {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.badge.offline {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.tabs {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin: 16px 0;
+}
+
+.tab {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  border-radius: 12px;
+  padding: 10px;
+  font-weight: 600;
+}
+
+.tab.active {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #ffffff;
+}
+
+.filters {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.filters input,
+.filters select {
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  padding: 10px 12px;
+  font-size: 1rem;
+}
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px;
+}
+
+.store-switcher {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.store {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #f1f5f9;
+  padding: 10px;
+  font-weight: 700;
+}
+
+.store.active {
+  background: var(--brand-soft);
+  border-color: #86efac;
+}
+
+.store-total {
+  grid-column: 1 / -1;
+  font-weight: 700;
+  color: #166534;
+  text-align: right;
+}
+
+.item-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px;
+  margin-bottom: 10px;
+  background: #fcfcfd;
+}
+
+.item-card h3 {
+  margin: 0 0 4px;
+}
+
+.item-meta {
+  display: flex;
+  gap: 10px;
+  color: var(--soft);
+  font-size: 0.9rem;
+}
+
+.entry-grid {
+  margin-top: 8px;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+.entry-grid label {
+  display: block;
+  font-size: 0.9rem;
+}
+
+.entry-grid input {
+  width: 100%;
+  margin-top: 4px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 9px 10px;
+  font-size: 1rem;
+}
+
+.qty-row {
+  display: grid;
+  grid-template-columns: 44px 1fr 44px;
+  gap: 6px;
+}
+
+.qty-row button {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: 1.1rem;
+  background: #f8fafc;
+}
+
+.subtotal {
+  margin-top: 8px;
+  font-weight: 700;
+}
+
+.actions {
+  margin-top: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.actions input {
+  width: 100%;
+  margin-top: 4px;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+}
+
+.primary,
+.secondary {
+  border-radius: 12px;
+  border: none;
+  padding: 12px;
+  font-weight: 700;
+}
+
+.primary {
+  background: var(--brand);
+  color: #ffffff;
+}
+
+.secondary {
+  background: #f1f5f9;
+  color: #1e293b;
+}
+
+.comparison-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.store-box {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px;
+  text-align: center;
+  background: #f8fafc;
+}
+
+.store-box h3,
+.store-box p {
+  margin: 0;
+}
+
+.store-box p {
+  margin-top: 5px;
+  font-weight: 800;
+  color: #166534;
+}
+
+.history-list {
+  margin: 0;
+  padding: 0 0 0 18px;
+}
+
+.muted {
+  color: var(--soft);
+}
+
+.status {
+  margin-top: 10px;
+  padding: 10px;
+  border-radius: 10px;
+  background: #eff6ff;
+  color: #1e3a8a;
+  font-size: 0.92rem;
+}
+
+@media (max-width: 700px) {
+  .tabs {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .filters {
+    grid-template-columns: 1fr;
+  }
+
+  .comparison-grid {
+    grid-template-columns: 1fr;
+  }
+}
