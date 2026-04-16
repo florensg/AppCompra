@@ -3,6 +3,11 @@ const APP_ENTRIES_SHEET = "app_entries";
 const HEADERS_ROW = 1;
 const START_ROW = 3;
 const ACTIVE_STORES = ["CHEK", "CUCHER", "VITAL"];
+const SPREADSHEET_ID = "1KDeMzrNf-Q_dCH5N6ef1irwJnLOtNrRWPeA44H0onQ4";
+
+function getSpreadsheet_() {
+  return SpreadsheetApp.openById(SPREADSHEET_ID);
+}
 
 function doGet(e) {
   return handleRequest_(e);
@@ -33,7 +38,7 @@ function handleRequest_(e) {
 }
 
 function buildBootstrap_() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = getSpreadsheet_();
   const sheet = ss.getSheetByName(SHEET_NAME);
   if (!sheet) throw new Error("No se encontró la hoja Compras");
 
@@ -82,7 +87,7 @@ function saveBatch_(entries) {
   if (!Array.isArray(entries)) throw new Error("entries debe ser un array");
   if (entries.length === 0) return { ok: true, inserted: 0 };
 
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = getSpreadsheet_();
   const sheet = getOrCreateEntriesSheet_(ss);
   const compras = ss.getSheetByName(SHEET_NAME);
   const headerRange = compras.getRange(HEADERS_ROW, 1, 1, compras.getLastColumn()).getValues()[0];
@@ -133,7 +138,7 @@ function saveBatch_(entries) {
 }
 
 function computeTotals_(dateParam) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = getSpreadsheet_();
   const sheet = ss.getSheetByName(APP_ENTRIES_SHEET);
   if (!sheet || sheet.getLastRow() < 2) return { totals: [] };
 

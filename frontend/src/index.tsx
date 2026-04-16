@@ -2,12 +2,27 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 
+const isLocalDev =
+  window.location.hostname === "127.0.0.1" ||
+  window.location.hostname === "localhost" ||
+  window.location.hostname === "[::1]";
+
 if ("serviceWorker" in navigator) {
-  window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/sw.js").catch(() => {
-      // registro opcional para PWA
+  if (isLocalDev) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.getRegistrations().then((registrations) => {
+        registrations.forEach((registration) => {
+          void registration.unregister();
+        });
+      });
     });
-  });
+  } else {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("/sw.js").catch(() => {
+        // registro opcional para PWA
+      });
+    });
+  }
 }
 
 const rootEl = document.getElementById("root");

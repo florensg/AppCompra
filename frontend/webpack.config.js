@@ -41,6 +41,16 @@ module.exports = {
     host: "127.0.0.1",
     port: 5173,
     historyApiFallback: true,
-    hot: true
+    hot: true,
+    proxy: {
+      "/api": {
+        target: "https://script.google.com",
+        changeOrigin: true,
+        secure: true,
+        pathRewrite: {
+          "^/api": "/macros/s/AKfycbz_Tad9Rc86q87Rcj6dHACWLrffczAJ1zLbziSkkMmJOola1XUwmuhb8_v_UXFzGMB4/exec"
+        }
+      }
+    }
   }
 };

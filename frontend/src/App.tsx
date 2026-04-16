@@ -89,8 +89,9 @@ export default function App() {
   function updateEntry(item: Item, patch: Partial<Pick<Entry, "precioUnitario" | "cantidad">>) {
     const key = entryKey(selectedStore, item.id);
     const current = entryMap[key];
+    const fallbackQty = Math.max(item.sugerida || 0, 1);
     const precioUnitario = patch.precioUnitario ?? current?.precioUnitario ?? 0;
-    const cantidad = patch.cantidad ?? current?.cantidad ?? item.sugerida ?? 0;
+    const cantidad = patch.cantidad ?? current?.cantidad ?? fallbackQty;
     const subtotal = toMoney(precioUnitario * cantidad);
 
     const entry: Entry = {
@@ -106,14 +107,13 @@ export default function App() {
       createdAt: current?.createdAt ?? nowIso()
     };
 
-    if (entry.precioUnitario < 0 || entry.cantidad <= 0) {
-      setStatus("Validación: precio >= 0 y cantidad > 0.");
-      return;
-    }
-
     const next = { ...entryMap, [key]: entry };
     setEntryMap(next);
     void db.entries.put(entry);
+
+    if (entry.precioUnitario < 0 || entry.cantidad <= 0) {
+      setStatus("Ítem cargado con advertencia: para guardar la ronda se requiere precio >= 0 y cantidad > 0.");
+    }
   }
 
   function bumpQuantity(item: Item, delta: number) {
@@ -148,9 +148,11 @@ export default function App() {
   }
 
   async function saveCurrentRound() {
-    const entries = Object.values(entryMap).filter((entry) => entry.rondaId === currentRonda.id);
+    const allEntries = Object.values(entryMap);
+    const byCurrentRound = allEntries.filter((entry) => entry.rondaId === currentRonda.id);
+    const entries = byCurrentRound.length > 0 ? byCurrentRound : allEntries;
     if (entries.length === 0) {
-      setStatus("No hay ítems cargados para guardar.");
+      setStatus("No hay ítems cargados para guardar. Cargá al menos precio y cantidad en un artículo.");
       return;
     }
 
@@ -172,10 +174,10 @@ export default function App() {
     try {
       await sendEntriesBatch(entries);
       setStatus("Ronda sincronizada con Google Sheets.");
-    } catch {
+    } catch (error) {
       const job: SyncJob = { id: makeId(), payload: entries, attempts: 1, createdAt: nowIso() };
       await db.syncQueue.put(job);
-      setStatus("Error de red: ronda en cola para reintento automático.");
+      setStatus(`Error de red: ronda en cola para reintento automático. Detalle: ${String(error)}`);
     }
   }
 
