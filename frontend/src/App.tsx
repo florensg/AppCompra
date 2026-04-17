@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ACTIVE_STORES, CATEGORY_LABELS, GOOGLE_CLIENT_ID } from "./constants";
+import { ACTIVE_STORES, CATEGORY_LABELS } from "./constants";
 import { fetchBootstrap, fetchTotals, sendEntriesBatch, syncEntries } from "./api";
-import { initAuth, requestToken, signOut as authSignOut } from "./auth";
 import { db } from "./db";
 import { MOCK_ITEMS } from "./mockCatalog";
 import { CategoryId, Entry, Item, Ronda, StoreName, StoreTotal, SyncJob } from "./types";
@@ -60,22 +59,9 @@ export default function App() {
   // entryMap is intentionally NOT persisted across sessions — reset on load
   const [entryMap, setEntryMap] = useState<Record<string, Entry>>({});
   const [totals, setTotals] = useState<StoreTotal[]>(initialTotals());
-  const [status, setStatus] = useState("Iniciá sesión para cargar datos.");
-  const [signedIn, setSignedIn] = useState(false);
-  const [authLoading, setAuthLoading] = useState(false);
+  const [status, setStatus] = useState("Conectando con el servidor...");
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const searchInputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    const tryInit = () => {
-      if (window.google?.accounts?.oauth2) {
-        initAuth(GOOGLE_CLIENT_ID);
-      } else {
-        setTimeout(tryInit, 200);
-      }
-    };
-    tryInit();
-  }, []);
 
   // Track online/offline state reactively
   useEffect(() => {
@@ -90,7 +76,6 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!signedIn) return;
     void bootstrap();
     // NOTE: intentionally NOT calling loadDraftEntries() — entries reset each session
     const onOnline = () => {
@@ -99,28 +84,7 @@ export default function App() {
     };
     window.addEventListener("online", onOnline);
     return () => window.removeEventListener("online", onOnline);
-  }, [signedIn]);
-
-  async function handleSignIn() {
-    setAuthLoading(true);
-    try {
-      await requestToken("consent");
-      setSignedIn(true);
-      setStatus("Autenticado. Cargando catálogo...");
-    } catch (err) {
-      setStatus(`Error al iniciar sesión: ${String(err)}`);
-    } finally {
-      setAuthLoading(false);
-    }
-  }
-
-  function handleSignOut() {
-    authSignOut();
-    setSignedIn(false);
-    setItems([]);
-    setEntryMap({});
-    setStatus("Sesión cerrada.");
-  }
+  }, []);
 
   useEffect(() => {
     recalcTotals(entryMap);
@@ -281,30 +245,6 @@ export default function App() {
     }
   }
 
-  // ── Login screen ─────────────────────────────────────────────
-  if (!signedIn) {
-    return (
-      <div className="login-screen">
-        <div className="login-card">
-          <div className="login-logo">🛒</div>
-          <h1>AppCompras</h1>
-          <p>Carga rápida de precios y cantidades</p>
-          <button
-            id="btn-google-signin"
-            type="button"
-            className="google-btn"
-            onClick={() => void handleSignIn()}
-            disabled={authLoading}
-          >
-            {authLoading ? "Conectando..." : "Iniciar sesión con Google"}
-          </button>
-          {status !== "Iniciá sesión para cargar datos." && (
-            <p className="status-inline">{status}</p>
-          )}
-        </div>
-      </div>
-    );
-  }
 
   const priorityPills: { label: string; value: PriorityFilter }[] = [
     { label: "Todos", value: "all" },
@@ -348,7 +288,6 @@ export default function App() {
               <button type="button" className="search-clear" onClick={() => { setSearch(""); setSearchOpen(false); }}>✕</button>
             )}
           </div>
-          <button id="btn-signout" type="button" className="badge signout-btn" onClick={handleSignOut}>Salir</button>
         </div>
       </header>
 

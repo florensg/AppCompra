@@ -1,17 +1,27 @@
-/**
- * api.ts — capa de acceso a datos.
- * Ahora usa directamente la Google Sheets API v4 (sheetsApi.ts)
- * en lugar del backend de Apps Script.
- */
-
 import { BootstrapResponse, Entry, TotalsResponse } from "./types";
-import { fetchBootstrap as sheetsFetchBootstrap, saveBatch, computeTotals } from "./sheetsApi";
+import { APP_SCRIPT_URL } from "./constants";
 import { MOCK_ITEMS } from "./mockCatalog";
+
+// Helper for fetching Apps Script backend
+async function fetchGas(path: string, options?: RequestInit) {
+  if (!APP_SCRIPT_URL) throw new Error("Aún no has configurado tu APP_SCRIPT_URL.");
+  
+  // Clean base URL and append path (for Google Apps Script pathInfo)
+  const baseUrl = APP_SCRIPT_URL.replace(/\/+$/, "");
+  const [route, queryStr] = path.split("?");
+  const cleanRoute = route.replace(/^\/+/, "");
+  const url = `${baseUrl}/${cleanRoute}${queryStr ? "?" + queryStr : ""}`;
+
+  const response = await fetch(url, options);
+  const data = await response.json();
+  if (data.error) throw new Error(data.error);
+  return data;
+}
 
 export async function fetchBootstrap(): Promise<BootstrapResponse> {
   try {
-    const data = await sheetsFetchBootstrap();
-    return data.items.length > 0 ? data : { items: MOCK_ITEMS, latestPrices: {} };
+    const data = await fetchGas("bootstrap");
+    return data.items && data.items.length > 0 ? data : { items: MOCK_ITEMS, latestPrices: {} };
   } catch (err) {
     console.warn("fetchBootstrap falló, usando catálogo local:", err);
     return { items: MOCK_ITEMS, latestPrices: {} };
@@ -19,15 +29,22 @@ export async function fetchBootstrap(): Promise<BootstrapResponse> {
 }
 
 export async function sendEntriesBatch(entries: Entry[]): Promise<{ ok: boolean }> {
-  await saveBatch(entries);
+  await fetchGas("entries/batch", {
+    method: "POST",
+    body: JSON.stringify({ entries })
+  });
   return { ok: true };
 }
 
 export async function syncEntries(entries: Entry[]): Promise<{ ok: boolean }> {
-  await saveBatch(entries);
+  await fetchGas("sync", {
+    method: "POST",
+    body: JSON.stringify({ entries })
+  });
   return { ok: true };
 }
 
 export async function fetchTotals(date?: string): Promise<TotalsResponse> {
-  return computeTotals(date);
+  const path = date ? `totals?date=${encodeURIComponent(date)}` : "totals";
+  return fetchGas(path);
 }
