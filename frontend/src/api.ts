@@ -3,7 +3,7 @@ import { APP_SCRIPT_URL } from "./constants";
 import { MOCK_ITEMS } from "./mockCatalog";
 
 // Helper for fetching Apps Script backend
-async function fetchGas(path: string, options?: RequestInit) {
+async function fetchGas(path: string, options: RequestInit = {}) {
   if (!APP_SCRIPT_URL) throw new Error("Aún no has configurado tu APP_SCRIPT_URL.");
   
   // Clean base URL and append path (for Google Apps Script pathInfo)
@@ -12,7 +12,13 @@ async function fetchGas(path: string, options?: RequestInit) {
   const cleanRoute = route.replace(/^\/+/, "");
   const url = `${baseUrl}/${cleanRoute}${queryStr ? "?" + queryStr : ""}`;
 
-  const response = await fetch(url, options);
+  // GAS requires plain text to avoid CORS preflight OPTIONS rejection
+  const headers = new Headers(options.headers || {});
+  if (options.method === "POST" && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "text/plain;charset=utf-8");
+  }
+
+  const response = await fetch(url, { ...options, headers });
   const data = await response.json();
   if (data.error) throw new Error(data.error);
   return data;
