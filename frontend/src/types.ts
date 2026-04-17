@@ -20,6 +20,7 @@ export interface Entry {
   precioUnitario: number;
   cantidad: number;
   subtotal: number;
+  inCart: boolean;       // true = confirmed purchase; false = just comparing price
   offline: boolean;
   createdAt: string;
 }

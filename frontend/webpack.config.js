@@ -48,7 +48,7 @@ module.exports = {
         changeOrigin: true,
         secure: true,
         pathRewrite: {
-          "^/api": "/macros/s/AKfycbz_Tad9Rc86q87Rcj6dHACWLrffczAJ1zLbziSkkMmJOola1XUwmuhb8_v_UXFzGMB4/exec"
+          "^/api": "/macros/s/AKfycbycsubOvZ6Y_SgMrMxHzx02uhG6rXPwZIOlS6kjTU2m7jcUPtuBg2R6WOmAYXNx4JkE/exec"
         }
       }
     }

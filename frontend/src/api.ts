@@ -1,69 +1,33 @@
-import { APP_SCRIPT_URL } from "./constants";
+/**
+ * api.ts — capa de acceso a datos.
+ * Ahora usa directamente la Google Sheets API v4 (sheetsApi.ts)
+ * en lugar del backend de Apps Script.
+ */
+
 import { BootstrapResponse, Entry, TotalsResponse } from "./types";
-
-const isLocalDev =
-  window.location.hostname === "127.0.0.1" ||
-  window.location.hostname === "localhost" ||
-  window.location.hostname === "[::1]";
-
-const isApiEnabled = (): boolean => isLocalDev || APP_SCRIPT_URL.length > 0;
-
-const buildUrl = (path: string): string => {
-  const cleanPath = path.replace(/^\/+/, "");
-  if (isLocalDev) {
-    return `/api/${cleanPath}`;
-  }
-  const base = APP_SCRIPT_URL.replace(/\/+$/, "");
-  return `${base}/${cleanPath}`;
-};
-
-async function requestGet<T>(path: string): Promise<T> {
-  if (!isApiEnabled()) {
-    throw new Error("APP_SCRIPT_URL no configurado.");
-  }
-
-  const response = await fetch(buildUrl(path), { method: "GET" });
-  if (!response.ok) {
-    throw new Error(`API GET error (${response.status}) url=${response.url}`);
-  }
-  return (await response.json()) as T;
-}
-
-async function requestPost<T>(path: string, payload: unknown): Promise<T> {
-  if (!isApiEnabled()) {
-    throw new Error("APP_SCRIPT_URL no configurado.");
-  }
-
-  // text/plain evita preflight CORS innecesario contra Apps Script.
-  const response = await fetch(buildUrl(path), {
-    method: "POST",
-    headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify(payload)
-  });
-
-  if (!response.ok) {
-    throw new Error(`API POST error (${response.status}) url=${response.url}`);
-  }
-
-  return (await response.json()) as T;
-}
+import { fetchBootstrap as sheetsFetchBootstrap, saveBatch, computeTotals } from "./sheetsApi";
+import { MOCK_ITEMS } from "./mockCatalog";
 
 export async function fetchBootstrap(): Promise<BootstrapResponse> {
-  if (!isApiEnabled()) {
-    return { items: [], latestPrices: {} };
+  try {
+    const data = await sheetsFetchBootstrap();
+    return data.items.length > 0 ? data : { items: MOCK_ITEMS, latestPrices: {} };
+  } catch (err) {
+    console.warn("fetchBootstrap falló, usando catálogo local:", err);
+    return { items: MOCK_ITEMS, latestPrices: {} };
   }
-  return requestGet<BootstrapResponse>("bootstrap");
 }
 
 export async function sendEntriesBatch(entries: Entry[]): Promise<{ ok: boolean }> {
-  return requestPost<{ ok: boolean }>("entries/batch", { entries });
+  await saveBatch(entries);
+  return { ok: true };
 }
 
 export async function syncEntries(entries: Entry[]): Promise<{ ok: boolean }> {
-  return requestPost<{ ok: boolean }>("sync", { entries });
+  await saveBatch(entries);
+  return { ok: true };
 }
 
 export async function fetchTotals(date?: string): Promise<TotalsResponse> {
-  const query = date ? `totals?date=${encodeURIComponent(date)}` : "totals";
-  return requestGet<TotalsResponse>(query);
+  return computeTotals(date);
 }

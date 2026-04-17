@@ -1,13 +1,16 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { ACTIVE_STORES, CATEGORY_LABELS } from "./constants";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { ACTIVE_STORES, CATEGORY_LABELS, GOOGLE_CLIENT_ID } from "./constants";
 import { fetchBootstrap, fetchTotals, sendEntriesBatch, syncEntries } from "./api";
+import { initAuth, requestToken, signOut as authSignOut } from "./auth";
 import { db } from "./db";
 import { MOCK_ITEMS } from "./mockCatalog";
 import { CategoryId, Entry, Item, Ronda, StoreName, StoreTotal, SyncJob } from "./types";
 import { makeId, nowIso, parseDecimal, toMoney } from "./utils";
 import "./styles.css";
 
-type View = "lista" | "carga" | "comparacion" | "historial";
+type View = "lista" | "carga" | "comparacion";
+type PriorityMode = "orange-first" | "red-first";
+type PriorityFilter = "all" | "orange" | "red" | "none";
 
 const DEFAULT_VIEW: View = "carga";
 
@@ -28,42 +31,97 @@ const initialTotals = (): StoreTotal[] =>
     updatedAt: nowIso()
   }));
 
+// ── Priority helpers ─────────────────────────────────────────────
+const hayClass = (hay: number): string =>
+  hay > 5 ? "priority-red" : hay > 0 ? "priority-orange" : "";
+
+const hayPriority = (hay: number, mode: PriorityMode): number => {
+  if (mode === "orange-first") return hay > 0 && hay <= 5 ? 0 : hay > 5 ? 1 : 2;
+  return hay > 5 ? 0 : hay > 0 && hay <= 5 ? 1 : 2;
+};
+
+const matchesPriorityFilter = (hay: number, f: PriorityFilter): boolean => {
+  if (f === "all") return true;
+  if (f === "orange") return hay > 0 && hay <= 5;
+  if (f === "red") return hay > 5;
+  return hay === 0;
+};
+
 export default function App() {
   const [view, setView] = useState<View>(DEFAULT_VIEW);
   const [items, setItems] = useState<Item[]>([]);
   const [currentRonda, setCurrentRonda] = useState<Ronda>(newRonda());
   const [selectedStore, setSelectedStore] = useState<StoreName>("CHEK");
   const [search, setSearch] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
   const [categoryFilter, setCategoryFilter] = useState<CategoryId | "all">("all");
+  const [priorityMode, setPriorityMode] = useState<PriorityMode>("orange-first");
+  const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>("all");
+  // entryMap is intentionally NOT persisted across sessions — reset on load
   const [entryMap, setEntryMap] = useState<Record<string, Entry>>({});
   const [totals, setTotals] = useState<StoreTotal[]>(initialTotals());
-  const [status, setStatus] = useState("Listo para cargar precios.");
+  const [status, setStatus] = useState("Iniciá sesión para cargar datos.");
+  const [signedIn, setSignedIn] = useState(false);
+  const [authLoading, setAuthLoading] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    void bootstrap();
-    void loadDraftEntries();
+    const tryInit = () => {
+      if (window.google?.accounts?.oauth2) {
+        initAuth(GOOGLE_CLIENT_ID);
+      } else {
+        setTimeout(tryInit, 200);
+      }
+    };
+    tryInit();
+  }, []);
 
+  useEffect(() => {
+    if (!signedIn) return;
+    void bootstrap();
+    // NOTE: intentionally NOT calling loadDraftEntries() — entries reset each session
     const onOnline = () => {
       setStatus("Conectado: sincronizando cola pendiente...");
       void flushSyncQueue();
     };
-
     window.addEventListener("online", onOnline);
     return () => window.removeEventListener("online", onOnline);
-  }, []);
+  }, [signedIn]);
+
+  async function handleSignIn() {
+    setAuthLoading(true);
+    try {
+      await requestToken("consent");
+      setSignedIn(true);
+      setStatus("Autenticado. Cargando catálogo...");
+    } catch (err) {
+      setStatus(`Error al iniciar sesión: ${String(err)}`);
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  function handleSignOut() {
+    authSignOut();
+    setSignedIn(false);
+    setItems([]);
+    setEntryMap({});
+    setStatus("Sesión cerrada.");
+  }
 
   useEffect(() => {
     recalcTotals(entryMap);
   }, [entryMap]);
 
   const filteredItems = useMemo(() => {
-    const byCategory =
-      categoryFilter === "all" ? items : items.filter((item) => item.categoria === categoryFilter);
-
-    if (!search.trim()) return byCategory;
-    const q = search.toLowerCase().trim();
-    return byCategory.filter((item) => item.nombre.toLowerCase().includes(q));
-  }, [items, search, categoryFilter]);
+    let list = categoryFilter === "all" ? items : items.filter((i) => i.categoria === categoryFilter);
+    if (search.trim()) {
+      const q = search.toLowerCase().trim();
+      list = list.filter((i) => i.nombre.toLowerCase().includes(q));
+    }
+    list = list.filter((i) => matchesPriorityFilter(i.hay, priorityFilter));
+    return [...list].sort((a, b) => hayPriority(a.hay, priorityMode) - hayPriority(b.hay, priorityMode));
+  }, [items, search, categoryFilter, priorityFilter, priorityMode]);
 
   async function bootstrap() {
     try {
@@ -77,23 +135,12 @@ export default function App() {
     }
   }
 
-  async function loadDraftEntries() {
-    const stored = await db.entries.toArray();
-    const map: Record<string, Entry> = {};
-    for (const entry of stored) {
-      map[entryKey(entry.supermercado, entry.itemId)] = entry;
-    }
-    setEntryMap(map);
-  }
-
   function updateEntry(item: Item, patch: Partial<Pick<Entry, "precioUnitario" | "cantidad">>) {
     const key = entryKey(selectedStore, item.id);
     const current = entryMap[key];
-    const fallbackQty = Math.max(item.sugerida || 0, 1);
     const precioUnitario = patch.precioUnitario ?? current?.precioUnitario ?? 0;
-    const cantidad = patch.cantidad ?? current?.cantidad ?? fallbackQty;
+    const cantidad = patch.cantidad ?? current?.cantidad ?? Math.max(item.sugerida || 0, 1);
     const subtotal = toMoney(precioUnitario * cantidad);
-
     const entry: Entry = {
       id: current?.id ?? makeId(),
       rondaId: currentRonda.id,
@@ -103,81 +150,86 @@ export default function App() {
       precioUnitario,
       cantidad,
       subtotal,
+      inCart: current?.inCart ?? false,
       offline: !navigator.onLine,
       createdAt: current?.createdAt ?? nowIso()
     };
-
-    const next = { ...entryMap, [key]: entry };
-    setEntryMap(next);
-    void db.entries.put(entry);
-
+    setEntryMap((prev) => ({ ...prev, [key]: entry }));
     if (entry.precioUnitario < 0 || entry.cantidad <= 0) {
-      setStatus("Ítem cargado con advertencia: para guardar la ronda se requiere precio >= 0 y cantidad > 0.");
+      setStatus("Ítem cargado con advertencia: precio >= 0 y cantidad > 0 requeridos.");
     }
+  }
+
+  function toggleCart(item: Item) {
+    const key = entryKey(selectedStore, item.id);
+    const current = entryMap[key];
+    if (!current) return;
+    const updated: Entry = { ...current, inCart: !current.inCart };
+    setEntryMap((prev) => ({ ...prev, [key]: updated }));
   }
 
   function bumpQuantity(item: Item, delta: number) {
     const key = entryKey(selectedStore, item.id);
     const current = entryMap[key];
-    const baseQty = current?.cantidad ?? Math.max(item.sugerida, 1);
-    const nextQty = Math.max(0.1, toMoney(baseQty + delta));
+    const nextQty = Math.max(0.1, toMoney((current?.cantidad ?? Math.max(item.sugerida, 1)) + delta));
     updateEntry(item, { cantidad: nextQty });
   }
 
   function recalcTotals(map: Record<string, Entry>) {
     const rollup = new Map<StoreName, { total: number; itemsCount: number }>();
     for (const store of ACTIVE_STORES) rollup.set(store, { total: 0, itemsCount: 0 });
-
-    Object.values(map).forEach((entry) => {
-      const bucket = rollup.get(entry.supermercado);
-      if (!bucket) return;
-      bucket.total += entry.subtotal;
-      bucket.itemsCount += 1;
-    });
-
-    const nextTotals = ACTIVE_STORES.map((store) => {
-      const bucket = rollup.get(store)!;
-      return {
-        supermercado: store,
-        total: toMoney(bucket.total),
-        itemsCount: bucket.itemsCount,
-        updatedAt: nowIso()
-      };
-    });
-    setTotals(nextTotals);
+    Object.values(map)
+      .filter((e) => e.inCart)
+      .forEach((entry) => {
+        const bucket = rollup.get(entry.supermercado);
+        if (!bucket) return;
+        bucket.total += entry.subtotal;
+        bucket.itemsCount += 1;
+      });
+    setTotals(
+      ACTIVE_STORES.map((store) => {
+        const b = rollup.get(store)!;
+        return { supermercado: store, total: toMoney(b.total), itemsCount: b.itemsCount, updatedAt: nowIso() };
+      })
+    );
   }
 
+  const currentStoreTotal = useMemo(
+    () => totals.find((t) => t.supermercado === selectedStore)?.total ?? 0,
+    [totals, selectedStore]
+  );
+
   async function saveCurrentRound() {
-    const allEntries = Object.values(entryMap);
-    const byCurrentRound = allEntries.filter((entry) => entry.rondaId === currentRonda.id);
-    const entries = byCurrentRound.length > 0 ? byCurrentRound : allEntries;
-    if (entries.length === 0) {
-      setStatus("No hay ítems cargados para guardar. Cargá al menos precio y cantidad en un artículo.");
+    if (!currentRonda.fecha) {
+      setStatus("⚠️ La fecha es obligatoria. Seleccioná una fecha antes de guardar la ronda.");
       return;
     }
-
-    const invalid = entries.find((entry) => entry.precioUnitario < 0 || entry.cantidad <= 0);
+    // Only save entries that are "inCart"
+    const cartEntries = Object.values(entryMap).filter((e) => e.inCart);
+    if (cartEntries.length === 0) {
+      setStatus("No hay artículos en el carrito. Marcá con 🛒 los artículos a guardar.");
+      return;
+    }
+    const invalid = cartEntries.find((e) => e.precioUnitario < 0 || e.cantidad <= 0);
     if (invalid) {
       setStatus("Hay ítems inválidos: verificá precio y cantidad.");
       return;
     }
-
+    const entriesWithFecha = cartEntries.map((e) => ({ ...e, fecha: currentRonda.fecha }));
     await db.rondas.put(currentRonda);
-
     if (!navigator.onLine) {
-      const job: SyncJob = { id: makeId(), payload: entries, attempts: 0, createdAt: nowIso() };
+      const job: SyncJob = { id: makeId(), payload: entriesWithFecha, attempts: 0, createdAt: nowIso() };
       await db.syncQueue.put(job);
       setStatus("Sin internet: ronda guardada localmente para sincronizar.");
       return;
     }
-
     try {
-      await sendEntriesBatch(entries);
-      setStatus("Ronda sincronizada con Google Sheets.");
+      await sendEntriesBatch(entriesWithFecha);
+      setStatus("✅ Ronda sincronizada con Google Sheets.");
     } catch (error) {
-      const job: SyncJob = { id: makeId(), payload: entries, attempts: 1, createdAt: nowIso() };
+      const job: SyncJob = { id: makeId(), payload: entriesWithFecha, attempts: 1, createdAt: nowIso() };
       await db.syncQueue.put(job);
-      setStatus(`Error de red: ronda en cola para reintento automático. Detalle: ${String(error)}`);
+      setStatus(`❌ Error al guardar: ${String(error)}`);
     }
   }
 
@@ -198,208 +250,314 @@ export default function App() {
       const response = await fetchTotals(currentRonda.fecha ?? undefined);
       if (response.totals.length > 0) {
         setTotals(response.totals);
-        setStatus("Totales actualizados desde backend.");
+        setStatus("Totales actualizados.");
       }
     } catch {
-      setStatus("No se pudieron consultar totales remotos. Mostrando totales locales.");
+      setStatus("Error al actualizar totales.");
     }
   }
 
-  const currentStoreTotal = totals.find((t) => t.supermercado === selectedStore)?.total ?? 0;
+  // ── Login screen ─────────────────────────────────────────────
+  if (!signedIn) {
+    return (
+      <div className="login-screen">
+        <div className="login-card">
+          <div className="login-logo">🛒</div>
+          <h1>AppCompras</h1>
+          <p>Carga rápida de precios y cantidades</p>
+          <button
+            id="btn-google-signin"
+            type="button"
+            className="google-btn"
+            onClick={() => void handleSignIn()}
+            disabled={authLoading}
+          >
+            {authLoading ? "Conectando..." : "Iniciar sesión con Google"}
+          </button>
+          {status !== "Iniciá sesión para cargar datos." && (
+            <p className="status-inline">{status}</p>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  const priorityPills: { label: string; value: PriorityFilter }[] = [
+    { label: "Todos", value: "all" },
+    { label: "🟡 Naranja", value: "orange" },
+    { label: "🔴 Rojo", value: "red" },
+    { label: "Sin color", value: "none" }
+  ];
 
   return (
     <div className="app-shell">
+      {/* ── Header ── */}
       <header className="top-header">
-        <div>
+        <div className="header-title">
+          <span>🛒</span>
           <h1>AppCompras</h1>
-          <p>Carga rápida de precios y cantidades</p>
         </div>
-        <div className={`badge ${navigator.onLine ? "online" : "offline"}`}>
-          {navigator.onLine ? "Online" : "Offline"}
+        <div className="header-right">
+          <div className={`badge ${navigator.onLine ? "online" : "offline"}`}>
+            {navigator.onLine ? "●" : "○"}
+          </div>
+          {/* Expandable search */}
+          <div className={`search-wrap ${searchOpen ? "open" : ""}`}>
+            <button
+              type="button"
+              className="search-icon-btn"
+              onClick={() => { setSearchOpen(true); setTimeout(() => searchInputRef.current?.focus(), 50); }}
+              aria-label="Buscar"
+            >
+              🔍
+            </button>
+            <input
+              ref={searchInputRef}
+              className="search-input"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Buscar artículo..."
+              onBlur={() => { if (!search) setSearchOpen(false); }}
+            />
+            {searchOpen && search && (
+              <button type="button" className="search-clear" onClick={() => { setSearch(""); setSearchOpen(false); }}>✕</button>
+            )}
+          </div>
+          <button id="btn-signout" type="button" className="badge signout-btn" onClick={handleSignOut}>Salir</button>
         </div>
       </header>
 
+      {/* ── Store totals bar (only cart items count) ── */}
+      <div className="store-totals-bar">
+        {totals.map((t) => (
+          <div key={t.supermercado} className="store-total-chip">
+            <span className="store-total-name">{t.supermercado}</span>
+            <span className="store-total-amount">${t.total.toFixed(0)}</span>
+            <span className="store-total-items">{t.itemsCount} 🛒</span>
+          </div>
+        ))}
+      </div>
+
+      {/* ── Tabs ── */}
       <nav className="tabs">
-        {[
-          ["lista", "Lista"],
-          ["carga", "Carga"],
-          ["comparacion", "Comparación"],
-          ["historial", "Historial"]
-        ].map(([id, label]) => (
-          <button
-            key={id}
-            className={view === id ? "tab active" : "tab"}
-            onClick={() => setView(id as View)}
-            type="button"
-          >
-            {label}
+        {(["lista", "carga", "comparacion"] as View[]).map((id) => (
+          <button key={id} className={view === id ? "tab active" : "tab"} onClick={() => setView(id)} type="button">
+            {id === "lista" ? "Lista" : id === "carga" ? "Carga" : "Comparar"}
           </button>
         ))}
       </nav>
 
-      <section className="filters">
-        <input
-          value={search}
-          onChange={(event) => setSearch(event.target.value)}
-          placeholder="Buscar artículo por nombre..."
-        />
+      {/* ── Filters bar ── */}
+      <section className="filters-bar">
         <select
           value={String(categoryFilter)}
-          onChange={(event) => {
-            const value = event.target.value;
-            setCategoryFilter(value === "all" ? "all" : (Number(value) as CategoryId));
+          onChange={(e) => {
+            const v = e.target.value;
+            setCategoryFilter(v === "all" ? "all" : (Number(v) as CategoryId));
           }}
         >
           <option value="all">Todas las categorías</option>
-          <option value="1">1 - Comestibles</option>
-          <option value="2">2 - Aseo y limpieza</option>
-          <option value="3">3 - Otros artículos</option>
+          <option value="1">Comestibles</option>
+          <option value="2">Aseo</option>
+          <option value="3">Otros</option>
         </select>
+        <div className="priority-controls">
+          {priorityPills.map((p) => (
+            <button
+              key={p.value}
+              type="button"
+              className={`priority-pill ${priorityFilter === p.value ? "active" : ""}`}
+              onClick={() => setPriorityFilter(p.value)}
+            >
+              {p.label}
+            </button>
+          ))}
+          <button
+            type="button"
+            className="priority-pill order-toggle"
+            title="Cambiar orden de prioridad"
+            onClick={() => setPriorityMode((m) => m === "orange-first" ? "red-first" : "orange-first")}
+          >
+            {priorityMode === "orange-first" ? "↑🟡" : "↑🔴"}
+          </button>
+        </div>
       </section>
 
+      {/* ── Lista ── */}
       {view === "lista" && (
         <section className="panel">
           {filteredItems.map((item) => (
-            <article key={item.id} className="item-card">
-              <div>
-                <h3>{item.nombre}</h3>
-                <small>{CATEGORY_LABELS[item.categoria]}</small>
-              </div>
-              <div className="item-meta">
-                <span>HAY: {item.hay}</span>
-                <span>Sugerida: {item.sugerida}</span>
-              </div>
+            <article key={item.id} className={`item-row ${hayClass(item.hay)}`}>
+              <span className="item-row-name">{item.nombre}</span>
+              <span className="item-row-stat">HAY <strong>{item.hay}</strong></span>
+              <span className="item-row-stat">SUG <strong>{item.sugerida}</strong></span>
+              <span className="item-row-cat">{CATEGORY_LABELS[item.categoria]}</span>
             </article>
           ))}
+          {filteredItems.length === 0 && (
+            <p className="empty-msg">No hay artículos que coincidan con los filtros.</p>
+          )}
         </section>
       )}
 
+      {/* ── Carga ── */}
       {view === "carga" && (
-        <section className="panel">
-          <div className="store-switcher">
-            {ACTIVE_STORES.map((store) => (
-              <button
-                key={store}
-                type="button"
-                className={selectedStore === store ? "store active" : "store"}
-                onClick={() => setSelectedStore(store)}
-              >
-                {store}
+        <section className="panel carga-panel">
+          <div className="carga-sticky-header">
+            <div className="store-switcher">
+              {ACTIVE_STORES.map((store) => (
+                <button
+                  key={store}
+                  type="button"
+                  className={selectedStore === store ? "store active" : "store"}
+                  onClick={() => setSelectedStore(store)}
+                >
+                  {store}
+                </button>
+              ))}
+              <div className="store-total">
+                Carrito: <strong>${currentStoreTotal.toFixed(2)}</strong>
+              </div>
+            </div>
+            <div className="actions-row">
+              <label className="fecha-label">
+                Fecha
+                <input
+                  type="date"
+                  value={currentRonda.fecha ?? ""}
+                  onChange={(e) => {
+                    const value = e.target.value || null;
+                    setCurrentRonda((prev) => ({ ...prev, fecha: value }));
+                  }}
+                />
+              </label>
+              <button className="primary" id="btn-save" type="button" onClick={() => void saveCurrentRound()}>
+                Guardar ronda
               </button>
-            ))}
-            <div className="store-total">Total {selectedStore}: ${currentStoreTotal.toFixed(2)}</div>
+            </div>
           </div>
 
-          {filteredItems.map((item) => {
-            const key = entryKey(selectedStore, item.id);
-            const entry = entryMap[key];
-            return (
-              <article key={item.id} className="item-card">
-                <div>
-                  <h3>{item.nombre}</h3>
-                  <small>HAY: {item.hay} | Sugerida: {item.sugerida}</small>
-                </div>
-                <div className="entry-grid">
-                  <label>
-                    Precio unitario
-                    <input
-                      type="text"
-                      inputMode="decimal"
-                      value={entry?.precioUnitario ?? ""}
-                      onChange={(event) =>
-                        updateEntry(item, { precioUnitario: parseDecimal(event.target.value) })
-                      }
-                    />
-                  </label>
-                  <label>
-                    Cantidad
-                    <div className="qty-row">
-                      <button type="button" onClick={() => bumpQuantity(item, -1)}>
-                        -
-                      </button>
+          <div className="carga-items-list">
+            {filteredItems.map((item) => {
+              const key = entryKey(selectedStore, item.id);
+              const entry = entryMap[key];
+              const hasEntry = entry && (entry.precioUnitario > 0 || entry.cantidad > 0);
+              return (
+                <article key={item.id} className={`item-card ${hayClass(item.hay)} ${entry?.inCart ? "in-cart" : ""}`}>
+                  {/* Compact item info */}
+                  <div className="item-row compact">
+                    <span className="item-row-name">{item.nombre}</span>
+                    <span className="item-row-stat">HAY <strong>{item.hay}</strong></span>
+                    <span className="item-row-stat">SUG <strong>{item.sugerida}</strong></span>
+                    <span className="item-row-cat">{CATEGORY_LABELS[item.categoria]}</span>
+                  </div>
+                  {/* Entry inputs + cart button */}
+                  <div className="entry-inputs">
+                    <label className="entry-label">
+                      <span>Precio</span>
                       <input
                         type="text"
                         inputMode="decimal"
-                        value={entry?.cantidad ?? ""}
-                        onChange={(event) => updateEntry(item, { cantidad: parseDecimal(event.target.value) })}
+                        value={entry?.precioUnitario ?? ""}
+                        onChange={(e) => updateEntry(item, { precioUnitario: parseDecimal(e.target.value) })}
                       />
-                      <button type="button" onClick={() => bumpQuantity(item, 1)}>
-                        +
-                      </button>
+                    </label>
+                    <label className="entry-label">
+                      <span>Cant.</span>
+                      <div className="qty-row">
+                        <button type="button" onClick={() => bumpQuantity(item, -1)}>−</button>
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          value={entry?.cantidad ?? ""}
+                          onChange={(e) => updateEntry(item, { cantidad: parseDecimal(e.target.value) })}
+                        />
+                        <button type="button" onClick={() => bumpQuantity(item, 1)}>+</button>
+                      </div>
+                    </label>
+                    <div className="entry-subtotal">
+                      ${(entry?.subtotal ?? 0).toFixed(2)}
                     </div>
-                  </label>
-                </div>
-                <div className="subtotal">Subtotal: ${(entry?.subtotal ?? 0).toFixed(2)}</div>
-              </article>
-            );
-          })}
-
-          <div className="actions">
-            <label>
-              Fecha (opcional)
-              <input
-                type="date"
-                value={currentRonda.fecha ?? ""}
-                onChange={(event) => {
-                  const value = event.target.value || null;
-                  setCurrentRonda((prev) => ({ ...prev, fecha: value }));
-                }}
-              />
-            </label>
-            <button className="primary" type="button" onClick={() => void saveCurrentRound()}>
-              Guardar ronda
-            </button>
+                    {/* Cart toggle — only shown when there's an entry */}
+                    {hasEntry && (
+                      <button
+                        type="button"
+                        className={`cart-btn ${entry?.inCart ? "cart-active" : ""}`}
+                        onClick={() => toggleCart(item)}
+                        title={entry?.inCart ? "Quitar del carrito" : "Agregar al carrito"}
+                      >
+                        🛒
+                      </button>
+                    )}
+                  </div>
+                </article>
+              );
+            })}
+            {filteredItems.length === 0 && (
+              <p className="empty-msg">No hay artículos que coincidan con los filtros.</p>
+            )}
           </div>
         </section>
       )}
 
+      {/* ── Comparación ── */}
       {view === "comparacion" && (
         <section className="panel">
-          <div className="comparison-grid">
-            {totals.map((total) => (
-              <article key={total.supermercado} className="store-box">
-                <h3>{total.supermercado}</h3>
-                <p>${total.total.toFixed(2)}</p>
-                <small>{total.itemsCount} ítems</small>
-              </article>
+          <div className="compare-header">
+            <div className="compare-name-col">Producto / HAY</div>
+            {ACTIVE_STORES.map((s) => (
+              <div key={s} className="compare-store-col">
+                <div className="compare-store-name">{s}</div>
+                <div className="compare-store-total">
+                  ${totals.find((t) => t.supermercado === s)?.total.toFixed(0) ?? "0"}
+                </div>
+              </div>
             ))}
           </div>
-          <button type="button" className="secondary" onClick={() => void refreshRemoteTotals()}>
-            Actualizar desde backend
+          <div className="compare-body">
+            {filteredItems.map((item) => {
+              const prices = ACTIVE_STORES.map((s) => {
+                const e = entryMap[entryKey(s, item.id)];
+                return e ? { subtotal: e.subtotal, inCart: e.inCart } : null;
+              });
+              const validPrices = prices.filter((p): p is { subtotal: number; inCart: boolean } => p !== null && p.subtotal > 0);
+              const minPrice = validPrices.length > 0 ? Math.min(...validPrices.map((p) => p.subtotal)) : null;
+              return (
+                <div key={item.id} className={`compare-row ${hayClass(item.hay)}`}>
+                  <div className="compare-name-col">
+                    <span className="item-row-name">{item.nombre}</span>
+                    <span className="item-row-stat" style={{ fontSize: "0.72rem" }}>HAY {item.hay}</span>
+                  </div>
+                  {prices.map((p, i) => (
+                    <div
+                      key={ACTIVE_STORES[i]}
+                      className={`compare-price-col ${p && p.subtotal > 0 && p.subtotal === minPrice ? "best-price" : ""} ${p?.inCart ? "is-cart" : ""}`}
+                    >
+                      {p && p.subtotal > 0 ? (
+                        <>
+                          <span>${p.subtotal.toFixed(2)}</span>
+                          {p.inCart && <span className="cart-icon-sm">🛒</span>}
+                        </>
+                      ) : "—"}
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+          <button type="button" className="secondary refresh-btn" onClick={() => void refreshRemoteTotals()}>
+            Actualizar totales
           </button>
         </section>
       )}
 
-      {view === "historial" && (
-        <section className="panel">
-          <p>Historial local de rondas guardadas.</p>
-          <HistorySection />
-        </section>
+      {/* ── Toast ── */}
+      {status && (
+        <div className="toast-notification" role="alert">
+          <span>{status}</span>
+          <button type="button" className="toast-close" onClick={() => setStatus("")} aria-label="Cerrar">✕</button>
+        </div>
       )}
-
-      <footer className="status">{status}</footer>
     </div>
-  );
-}
-
-function HistorySection() {
-  const [rows, setRows] = useState<Ronda[]>([]);
-
-  useEffect(() => {
-    void db.rondas.orderBy("createdAt").reverse().limit(20).toArray().then(setRows);
-  }, []);
-
-  if (rows.length === 0) {
-    return <p className="muted">Todavía no hay rondas guardadas.</p>;
-  }
-
-  return (
-    <ul className="history-list">
-      {rows.map((row) => (
-        <li key={row.id}>
-          <strong>{row.fecha ?? "Sin fecha"}</strong> - {new Date(row.createdAt).toLocaleString()}
-        </li>
-      ))}
-    </ul>
   );
 }
