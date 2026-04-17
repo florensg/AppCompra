@@ -179,7 +179,7 @@ function findDateColumns(
  * Creates new column group by INSERTING 4 cols at position D (index 3).
  * Structure:
  *   Row 1: D1:F1 merged → date string
- *   Row 2: D2=CHEK, E2=CUCHER, F2=VITAL
+ *   Row 2: D2=CHEEK, E2=CUCHER, F2=VITAL
  *   Row 3+: prices per product
  *   Col G: empty separator
  */
@@ -246,7 +246,7 @@ async function createDateColumns(
 
 /**
  * Guarda un lote de entradas creando nuevas columnas por fecha en la hoja "Compras".
- * Estructura: fila 1 = nombre tienda (CHEK/CUCHER/VITAL), fila 2 = fecha.
+ * Estructura: fila 1 = nombre tienda (CHEEK/CUCHER/VITAL), fila 2 = fecha.
  * Si ya existe un grupo de columnas para esa fecha, lo reutiliza.
  * Replica saveBatch_() de Code.gs con nuevo comportamiento por columna/fecha.
  */

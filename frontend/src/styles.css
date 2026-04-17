@@ -58,12 +58,31 @@ body {
 /* ── Online badge ─── */
 .badge {
   border-radius: 999px;
-  padding: 4px 8px;
-  font-size: 0.78rem;
+  padding: 3px 10px;
+  font-size: 0.75rem;
   font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
 }
 .badge.online  { background: #bbf7d0; color: #14532d; }
 .badge.offline { background: #fecaca; color: #7f1d1d; }
+
+/* Pulsing dot for online/offline status */
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.badge.online  .status-dot { background: #16a34a; animation: pulse-green 2s infinite; }
+.badge.offline .status-dot { background: #dc2626; }
+
+@keyframes pulse-green {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(22, 163, 74, 0.5); }
+  50%       { box-shadow: 0 0 0 4px rgba(22, 163, 74, 0); }
+}
 
 .signout-btn {
   background: rgba(255,255,255,0.15);
@@ -262,8 +281,8 @@ body {
   min-height: 40px;
 }
 
-.item-row.priority-red    { border-left-color: #ef4444; background: linear-gradient(to right, #ffe5e5, #fff); }
-.item-row.priority-orange { border-left-color: #FFF700; background: linear-gradient(to right, #fffde0, #fff); }
+.item-row.priority-red    { border-left-color: #dc2626; background: linear-gradient(to right, #fca5a5, #fff5f5); }
+.item-row.priority-orange { border-left-color: #eab308; background: linear-gradient(to right, #fef08a, #fffbeb); }
 
 .item-row-name {
   flex: 1;
@@ -317,8 +336,8 @@ body {
   gap: 8px;
 }
 
-.item-card.priority-red    { border-left-color: #ef4444; background: linear-gradient(105deg, #ffe5e5, #fff 60%); }
-.item-card.priority-orange { border-left-color: #FFF700; background: linear-gradient(105deg, #fffde0, #fff 60%); }
+.item-card.priority-red    { border-left-color: #dc2626; background: linear-gradient(105deg, #fca5a5, #fff5f5 60%); }
+.item-card.priority-orange { border-left-color: #eab308; background: linear-gradient(105deg, #fef08a, #fffbeb 60%); }
 
 .item-card.in-cart {
   box-shadow: 0 0 0 2px var(--brand-light), var(--shadow);
@@ -545,8 +564,8 @@ body {
   border-left: 3px solid transparent;
   box-shadow: var(--shadow);
 }
-.compare-row.priority-red    { border-left-color: #ef4444; }
-.compare-row.priority-orange { border-left-color: #FFF700; }
+.compare-row.priority-red    { border-left-color: #dc2626; }
+.compare-row.priority-orange { border-left-color: #eab308; }
 
 .compare-name-col {
   flex: 2;

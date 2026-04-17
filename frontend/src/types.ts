@@ -1,4 +1,4 @@
-export type StoreName = "CHEK" | "CUCHER" | "VITAL";
+export type StoreName = "CHEEK" | "CUCHER" | "VITAL";
 
 export type CategoryId = 1 | 2 | 3;
 

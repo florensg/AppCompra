@@ -2,7 +2,7 @@ const SHEET_NAME = "Compras";
 const APP_ENTRIES_SHEET = "app_entries";
 const HEADERS_ROW = 1;
 const START_ROW = 3;
-const ACTIVE_STORES = ["CHEK", "CUCHER", "VITAL"];
+const ACTIVE_STORES = ["CHEEK", "CUCHER", "VITAL"];
 const SPREADSHEET_ID = "1KDeMzrNf-Q_dCH5N6ef1irwJnLOtNrRWPeA44H0onQ4";
 
 function getSpreadsheet_() {
@@ -119,7 +119,7 @@ function saveBatch_(entries) {
   const startLogRow = sheet.getLastRow() + 1;
   sheet.getRange(startLogRow, 1, rowsForLog.length, rowsForLog[0].length).setValues(rowsForLog);
 
-  // Escribe en el bloque más reciente de CHEK/CUCHER/VITAL sin tocar bloque legado.
+  // Escribe en el bloque más reciente de CHEEK/CUCHER/VITAL sin tocar bloque legado.
   const comprasRows = compras.getRange(START_ROW, 1, Math.max(compras.getLastRow() - START_ROW + 1, 0), 2).getValues();
   const rowById = {};
   for (let i = 0; i < comprasRows.length; i++) {

@@ -51,7 +51,7 @@ export default function App() {
   const [view, setView] = useState<View>(DEFAULT_VIEW);
   const [items, setItems] = useState<Item[]>([]);
   const [currentRonda, setCurrentRonda] = useState<Ronda>(newRonda());
-  const [selectedStore, setSelectedStore] = useState<StoreName>("CHEK");
+  const [selectedStore, setSelectedStore] = useState<StoreName>("CHEEK");
   const [search, setSearch] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [categoryFilter, setCategoryFilter] = useState<CategoryId | "all">("all");
@@ -63,6 +63,7 @@ export default function App() {
   const [status, setStatus] = useState("Iniciá sesión para cargar datos.");
   const [signedIn, setSignedIn] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -74,6 +75,18 @@ export default function App() {
       }
     };
     tryInit();
+  }, []);
+
+  // Track online/offline state reactively
+  useEffect(() => {
+    const goOnline  = () => setIsOnline(true);
+    const goOffline = () => setIsOnline(false);
+    window.addEventListener("online",  goOnline);
+    window.addEventListener("offline", goOffline);
+    return () => {
+      window.removeEventListener("online",  goOnline);
+      window.removeEventListener("offline", goOffline);
+    };
   }, []);
 
   useEffect(() => {
@@ -128,10 +141,21 @@ export default function App() {
       const data = await fetchBootstrap();
       const resolved = data.items.length > 0 ? data.items : MOCK_ITEMS;
       setItems(resolved);
+      // Persist catalog to Dexie for offline use
+      if (data.items.length > 0) {
+        await db.itemsCache.put({ key: "catalog", items: data.items, savedAt: nowIso() });
+      }
       setStatus(data.items.length > 0 ? "Catálogo cargado desde Google Sheets." : "Catálogo demo local cargado.");
     } catch (error) {
-      setItems(MOCK_ITEMS);
-      setStatus(`Sin conexión API. Modo local activo. (${String(error)})`);
+      // Try to load cached catalog from IndexedDB before falling back to mock
+      const cached = await db.itemsCache.get("catalog");
+      if (cached && cached.items.length > 0) {
+        setItems(cached.items);
+        setStatus(`Sin conexión. Usando catálogo guardado (${cached.savedAt.slice(0, 10)}).`);
+      } else {
+        setItems(MOCK_ITEMS);
+        setStatus(`Sin conexión API. Modo local activo. (${String(error)})`);
+      }
     }
   }
 
@@ -298,8 +322,9 @@ export default function App() {
           <h1>AppCompras</h1>
         </div>
         <div className="header-right">
-          <div className={`badge ${navigator.onLine ? "online" : "offline"}`}>
-            {navigator.onLine ? "●" : "○"}
+          <div className={`badge ${isOnline ? "online" : "offline"}`}>
+            <span className="status-dot" />
+            {isOnline ? "Online" : "Sin red"}
           </div>
           {/* Expandable search */}
           <div className={`search-wrap ${searchOpen ? "open" : ""}`}>
