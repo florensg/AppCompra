@@ -1,5 +1,5 @@
 const CACHE_NAME = "appcompras-v2";
-const APP_SHELL  = ["/", "/manifest.webmanifest"];
+const APP_SHELL  = ["index.html", "manifest.webmanifest"];
 
 // Patterns that should NEVER be cached (Google OAuth & Sheets API)
 const BYPASS_PATTERNS = [
