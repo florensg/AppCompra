@@ -1,6 +1,6 @@
-export type StoreName = "CHEEK" | "CUCHER" | "VITAL";
+export type StoreName = string; // Flexibilidad para cualquier supermercado
 
-export type CategoryId = 1 | 2 | 3;
+export type CategoryId = number; // Flexibilidad para cualquier categoría
 
 export interface Item {
   id: string;
@@ -20,9 +20,10 @@ export interface Entry {
   precioUnitario: number;
   cantidad: number;
   subtotal: number;
-  inCart: boolean;       // true = confirmed purchase; false = just comparing price
+  inCart: boolean;
   offline: boolean;
   createdAt: string;
+  sender?: string;
 }
 
 export interface Ronda {
@@ -48,7 +49,8 @@ export interface SyncJob {
 
 export interface BootstrapResponse {
   items: Item[];
-  latestPrices: Record<string, Partial<Record<StoreName, number>>>;
+  latestPrices: Record<string, Partial<Record<string, number>>>;
+  source?: "sheets" | "firestore";
 }
 
 export interface TotalsResponse {

@@ -1,0 +1,11 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Allow read/write access to all users under any collection, 
+    // but only if they are authenticated via Firebase Auth.
+    match /{document=**} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}

@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ACTIVE_STORES, CATEGORY_LABELS, GOOGLE_CLIENT_ID } from "./constants";
-import { fetchBootstrap, fetchTotals, sendEntriesBatch, syncEntries } from "./api";
-import { initAuth, requestToken, signOut as authSignOut } from "./auth";
+import { ACTIVE_STORES, CATEGORY_LABELS } from "./constants";
+import { fetchBootstrap, fetchRound, fetchTotals, sendEntriesBatch, syncEntries } from "./api";
+import { signIn, signOut as authSignOut, onAuthStatusChange } from "./auth";
 import { db } from "./db";
+import { listenToLiveEntries, saveDraftEntry } from "./firestoreApi";
 import { MOCK_ITEMS } from "./mockCatalog";
 import { CategoryId, Entry, Item, Ronda, StoreName, StoreTotal, SyncJob } from "./types";
 import { makeId, nowIso, parseDecimal, toMoney } from "./utils";
@@ -16,12 +17,14 @@ const DEFAULT_VIEW: View = "carga";
 
 const newRonda = (): Ronda => ({
   id: makeId(),
-  fecha: null,
+  fecha: nowIso().slice(0, 10),
   storesActivos: ACTIVE_STORES,
   createdAt: nowIso()
 });
 
 const entryKey = (store: StoreName, itemId: string): string => `${store}::${itemId}`;
+
+const CLIENT_ID = makeId();
 
 const initialTotals = (): StoreTotal[] =>
   ACTIVE_STORES.map((store) => ({
@@ -47,6 +50,94 @@ const matchesPriorityFilter = (hay: number, f: PriorityFilter): boolean => {
   return hay === 0;
 };
 
+// ── Memoized ItemCard Component ──────────────────────────────────
+interface ItemCardProps {
+  item: Item;
+  entry?: Entry;
+  onUpdate: (item: Item, patch: Partial<Pick<Entry, "precioUnitario" | "cantidad">>) => void;
+  onToggleCart: (item: Item) => void;
+  onBumpQuantity: (item: Item, delta: number) => void;
+}
+
+const ItemCard = React.memo(({ item, entry, onUpdate, onToggleCart, onBumpQuantity }: ItemCardProps) => {
+  const [localPrecio, setLocalPrecio] = useState(entry?.precioUnitario !== undefined ? entry.precioUnitario.toString() : "");
+  const [localCantidad, setLocalCantidad] = useState(entry?.cantidad !== undefined ? entry.cantidad.toString() : "");
+  const hasEntry = entry && (entry.precioUnitario > 0 || entry.cantidad > 0);
+
+  // Sincronizar con el estado global solo si no tenemos el foco en el input
+  useEffect(() => {
+    const isFocused = document.activeElement?.getAttribute("data-item-id") === item.id;
+    if (!isFocused) {
+      setLocalPrecio(entry?.precioUnitario !== undefined ? entry.precioUnitario.toString() : "");
+      setLocalCantidad(entry?.cantidad !== undefined ? entry.cantidad.toString() : "");
+    }
+  }, [entry?.precioUnitario, entry?.cantidad, item.id]);
+
+  const handlePrecioChange = (val: string) => {
+    setLocalPrecio(val);
+    const num = parseDecimal(val);
+    onUpdate(item, { precioUnitario: num });
+  };
+
+  const handleCantidadChange = (val: string) => {
+    setLocalCantidad(val);
+    const num = Math.round(Number(val)) || 0;
+    onUpdate(item, { cantidad: num });
+  };
+
+  return (
+    <article className={`item-card ${hayClass(item.hay)} ${entry?.inCart ? "in-cart" : ""}`}>
+      <div className="item-row compact">
+        <span className="item-row-name">{item.nombre}</span>
+        <span className="item-row-stat">HAY <strong>{item.hay}</strong></span>
+        <span className="item-row-stat">SUG <strong>{item.sugerida}</strong></span>
+        <span className="item-row-cat">{CATEGORY_LABELS[item.categoria]}</span>
+      </div>
+      <div className="entry-inputs">
+        <label className="entry-label">
+          <span>Precio</span>
+          <input
+            type="text"
+            inputMode="decimal"
+            data-item-id={item.id}
+            value={localPrecio}
+            onChange={(e) => handlePrecioChange(e.target.value)}
+          />
+        </label>
+        <label className="entry-label">
+          <span>Cant.</span>
+          <div className="qty-row">
+            <button type="button" onClick={() => onBumpQuantity(item, -1)}>−</button>
+            <input
+              type="number"
+              inputMode="numeric"
+              data-item-id={item.id}
+              min="0"
+              step="1"
+              value={localCantidad}
+              onChange={(e) => handleCantidadChange(e.target.value)}
+            />
+            <button type="button" onClick={() => onBumpQuantity(item, 1)}>+</button>
+          </div>
+        </label>
+        <div className="entry-subtotal">
+          ${(entry?.subtotal ?? 0).toFixed(2)}
+        </div>
+        {hasEntry && (
+          <button
+            type="button"
+            className={`cart-btn ${entry?.inCart ? "cart-active" : ""}`}
+            onClick={() => onToggleCart(item)}
+            title={entry?.inCart ? "Quitar del carrito" : "Agregar al carrito"}
+          >
+            🛒
+          </button>
+        )}
+      </div>
+    </article>
+  );
+});
+
 export default function App() {
   const [view, setView] = useState<View>(DEFAULT_VIEW);
   const [items, setItems] = useState<Item[]>([]);
@@ -60,21 +151,28 @@ export default function App() {
   // entryMap is intentionally NOT persisted across sessions — reset on load
   const [entryMap, setEntryMap] = useState<Record<string, Entry>>({});
   const [totals, setTotals] = useState<StoreTotal[]>(initialTotals());
-  const [status, setStatus] = useState("Iniciá sesión para cargar datos.");
+  const [status, setStatus] = useState("Cargando...");
   const [signedIn, setSignedIn] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const debounceTimerRef = useRef<Record<string, NodeJS.Timeout>>({});
+  const idleTimerRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Monitor Firebase Auth State
   useEffect(() => {
-    const tryInit = () => {
-      if (window.google?.accounts?.oauth2) {
-        initAuth(GOOGLE_CLIENT_ID);
+    const unsubscribe = onAuthStatusChange((user) => {
+      if (user) {
+        setSignedIn(true);
+        setStatus(`Bienvenido, ${user.displayName || "Usuario"}`);
       } else {
-        setTimeout(tryInit, 200);
+        setSignedIn(false);
+        setItems([]);
+        setEntryMap({});
+        setStatus("Iniciá sesión para comenzar.");
       }
-    };
-    tryInit();
+    });
+    return () => unsubscribe();
   }, []);
 
   // Track online/offline state reactively
@@ -101,14 +199,118 @@ export default function App() {
     return () => window.removeEventListener("online", onOnline);
   }, [signedIn]);
 
+  // Temporizador de inactividad (20 minutos)
+  useEffect(() => {
+    if (!signedIn) return;
+
+    const resetTimer = () => {
+      if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = setTimeout(async () => {
+        setStatus("Inactividad detectada. Guardando y cerrando sesión...");
+        // Guardamos automáticamente antes de salir
+        const cartEntries = Object.values(entryMap).filter((e) => e.inCart);
+        if (cartEntries.length > 0) {
+          try {
+            await saveCurrentRound();
+          } catch (e) {
+            console.error("Error al auto-guardar:", e);
+          }
+        }
+        handleSignOut();
+      }, 20 * 60 * 1000); // 20 minutos
+    };
+
+    const events = ["mousedown", "mousemove", "keypress", "scroll", "touchstart"];
+    const handler = () => resetTimer();
+    
+    events.forEach(e => window.addEventListener(e, handler));
+    resetTimer();
+
+    return () => {
+      if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+      events.forEach(e => window.removeEventListener(e, handler));
+    };
+  }, [signedIn, entryMap, currentRonda.fecha]);
+
+  // Cargar datos históricos de Google Sheets cuando cambia la fecha
+  useEffect(() => {
+    if (!signedIn || !currentRonda.fecha) return;
+    
+    async function loadHistory() {
+      setStatus(`Buscando datos del ${currentRonda.fecha} en Sheets...`);
+      try {
+        const { entries: sheetEntries } = await fetchRound(currentRonda.fecha!);
+        if (sheetEntries.length > 0) {
+          setEntryMap(prev => {
+            const next = { ...prev };
+            sheetEntries.forEach((se: any) => {
+              const key = entryKey(se.supermercado, se.itemId);
+              // Solo cargamos el dato de Sheets si no tenemos ya algo editándose "en vivo" 
+              // (lo de Firebase tiene prioridad según lo pedido)
+              if (!next[key]) {
+                next[key] = {
+                  ...se,
+                  id: makeId(),
+                  rondaId: currentRonda.id,
+                  fecha: currentRonda.fecha,
+                  subtotal: toMoney(se.precioUnitario * se.cantidad),
+                  inCart: true,
+                  offline: false,
+                  createdAt: nowIso()
+                };
+              }
+            });
+            return next;
+          });
+          setStatus(`Se sincronizaron ${sheetEntries.length} artículos del historial.`);
+        } else {
+          // Si no hay datos, nos aseguramos de no mostrar basura de fechas anteriores
+          // Pero con cuidado de no borrar lo que el compañero está editando ahora mismo
+          setStatus(`No hay registros para el ${currentRonda.fecha}.`);
+        }
+      } catch (err) {
+        console.error("Error cargando historial:", err);
+      }
+    }
+
+    // Al cambiar la fecha, primero limpiamos para que no se vea data vieja 
+    // pero el listener de Firebase (en el otro useEffect) traerá lo nuevo
+    setEntryMap({}); 
+    void loadHistory();
+  }, [signedIn, currentRonda.fecha]);
+
+  // Sync en vivo del carrito (Firestore) para la fecha seleccionada
+  useEffect(() => {
+    if (!signedIn || !currentRonda.fecha) return;
+    const unsub = listenToLiveEntries(currentRonda.fecha, (liveEntries) => {
+      setEntryMap(prev => {
+        const next = { ...prev };
+        let changed = false;
+        liveEntries.forEach(le => {
+          // Ignorar nuestras propias actualizaciones para no pisar el input mientras escribimos
+          if ((le as any).sender === CLIENT_ID) return;
+
+          const key = entryKey(le.supermercado, le.itemId);
+          // Omitir actualización si el valor local es idéntico al de la nube
+          if (JSON.stringify(prev[key]) !== JSON.stringify(le)) {
+            next[key] = le;
+            changed = true;
+          }
+        });
+        return changed ? next : prev;
+      });
+    });
+    return () => unsub();
+  }, [signedIn, currentRonda.fecha]);
+
   async function handleSignIn() {
     setAuthLoading(true);
+    setStatus("Conectando con Google...");
     try {
-      await requestToken("consent");
-      setSignedIn(true);
-      setStatus("Autenticado. Cargando catálogo...");
+      await signIn();
     } catch (err) {
-      setStatus(`Error al iniciar sesión: ${String(err)}`);
+      console.error(err);
+      setStatus(`Error: ${String(err)}`);
     } finally {
       setAuthLoading(false);
     }
@@ -127,7 +329,12 @@ export default function App() {
   }, [entryMap]);
 
   const filteredItems = useMemo(() => {
-    let list = categoryFilter === "all" ? items : items.filter((i) => i.categoria === categoryFilter);
+    let list = items;
+    // Filtrado por categoría (si es 'all' muestra todos)
+    if (categoryFilter !== "all") {
+      list = list.filter((i) => i.categoria === categoryFilter);
+    }
+    
     if (search.trim()) {
       const q = search.toLowerCase().trim();
       list = list.filter((i) => i.nombre.toLowerCase().includes(q));
@@ -139,22 +346,26 @@ export default function App() {
   async function bootstrap() {
     try {
       const data = await fetchBootstrap();
-      const resolved = data.items.length > 0 ? data.items : MOCK_ITEMS;
-      setItems(resolved);
-      // Persist catalog to Dexie for offline use
-      if (data.items.length > 0) {
-        await db.itemsCache.put({ key: "catalog", items: data.items, savedAt: nowIso() });
+      if (!data.items || data.items.length === 0) {
+        throw new Error("El catálogo de Google Sheets está vacío o no se pudo leer.");
       }
-      setStatus(data.items.length > 0 ? "Catálogo cargado desde Google Sheets." : "Catálogo demo local cargado.");
+      setItems(data.items);
+      await db.itemsCache.put({ key: "catalog", items: data.items, savedAt: nowIso() });
+      
+      if (data.source === "sheets") {
+         setStatus("Catálogo cargado exitosamente desde Google Sheets.");
+      } else {
+         setStatus("⚠️ FALLÓ GOOGLE SHEETS: Cargando respaldo de datos viejos desde Firestore.");
+      }
     } catch (error) {
-      // Try to load cached catalog from IndexedDB before falling back to mock
+      console.error("Fallo total de carga:", error);
       const cached = await db.itemsCache.get("catalog");
       if (cached && cached.items.length > 0) {
         setItems(cached.items);
-        setStatus(`Sin conexión. Usando catálogo guardado (${cached.savedAt.slice(0, 10)}).`);
+        setStatus(`Sin conexión a Google Sheets. Usando copia local (${cached.savedAt.slice(0,10)}).`);
       } else {
-        setItems(MOCK_ITEMS);
-        setStatus(`Sin conexión API. Modo local activo. (${String(error)})`);
+        setItems([]);
+        setStatus(`⚠️ ERROR DE CONEXIÓN: ${String(error)}. Verificá que el enlace de Google Sheets sea correcto y público.`);
       }
     }
   }
@@ -163,7 +374,7 @@ export default function App() {
     const key = entryKey(selectedStore, item.id);
     const current = entryMap[key];
     const precioUnitario = patch.precioUnitario ?? current?.precioUnitario ?? 0;
-    const cantidad = patch.cantidad ?? current?.cantidad ?? Math.max(item.sugerida || 0, 1);
+    const cantidad = Math.round(patch.cantidad ?? current?.cantidad ?? 0);
     const subtotal = toMoney(precioUnitario * cantidad);
     const entry: Entry = {
       id: current?.id ?? makeId(),
@@ -176,10 +387,18 @@ export default function App() {
       subtotal,
       inCart: current?.inCart ?? false,
       offline: !navigator.onLine,
-      createdAt: current?.createdAt ?? nowIso()
+      createdAt: current?.createdAt ?? nowIso(),
+      sender: CLIENT_ID, // Adjuntamos el ID del dispositivo
     };
     setEntryMap((prev) => ({ ...prev, [key]: entry }));
-    if (entry.precioUnitario < 0 || entry.cantidad <= 0) {
+    
+    // Debounce a nivel de item para evitar flickering e interrupciones al escribir
+    if (debounceTimerRef.current[key]) clearTimeout(debounceTimerRef.current[key]);
+    debounceTimerRef.current[key] = setTimeout(() => {
+      saveDraftEntry(entry);
+    }, 500);
+
+    if (entry.precioUnitario < 0 || entry.cantidad < 0) {
       setStatus("Ítem cargado con advertencia: precio >= 0 y cantidad > 0 requeridos.");
     }
   }
@@ -188,14 +407,15 @@ export default function App() {
     const key = entryKey(selectedStore, item.id);
     const current = entryMap[key];
     if (!current) return;
-    const updated: Entry = { ...current, inCart: !current.inCart };
-    setEntryMap((prev) => ({ ...prev, [key]: updated }));
+    const unsigned = { ...current, inCart: !current.inCart, sender: CLIENT_ID };
+    setEntryMap((prev) => ({ ...prev, [key]: unsigned }));
+    saveDraftEntry(unsigned);
   }
 
   function bumpQuantity(item: Item, delta: number) {
     const key = entryKey(selectedStore, item.id);
     const current = entryMap[key];
-    const nextQty = Math.max(0.1, toMoney((current?.cantidad ?? Math.max(item.sugerida, 1)) + delta));
+    const nextQty = Math.max(0, Math.round((current?.cantidad ?? 0) + delta));
     updateEntry(item, { cantidad: nextQty });
   }
 
@@ -287,7 +507,7 @@ export default function App() {
       <div className="login-screen">
         <div className="login-card">
           <div className="login-logo">🛒</div>
-          <h1>AppCompras</h1>
+          <h1>AppCompras v2</h1>
           <p>Carga rápida de precios y cantidades</p>
           <button
             id="btn-google-signin"
@@ -378,13 +598,13 @@ export default function App() {
           value={String(categoryFilter)}
           onChange={(e) => {
             const v = e.target.value;
-            setCategoryFilter(v === "all" ? "all" : (Number(v) as CategoryId));
+            setCategoryFilter(v === "all" ? "all" : Number(v));
           }}
         >
           <option value="all">Todas las categorías</option>
-          <option value="1">Comestibles</option>
-          <option value="2">Aseo</option>
-          <option value="3">Otros</option>
+          {Array.from(new Set(items.map(i => i.categoria))).sort((a,b)=>a-b).map(cid => (
+             <option key={cid} value={cid}>{CATEGORY_LABELS[cid] || `Categoría ${cid}`}</option>
+          ))}
         </select>
         <div className="priority-controls">
           {priorityPills.map((p) => (
@@ -407,7 +627,7 @@ export default function App() {
           </button>
         </div>
       </section>
-
+ 
       {/* ── Lista ── */}
       {view === "lista" && (
         <section className="panel">
@@ -416,7 +636,7 @@ export default function App() {
               <span className="item-row-name">{item.nombre}</span>
               <span className="item-row-stat">HAY <strong>{item.hay}</strong></span>
               <span className="item-row-stat">SUG <strong>{item.sugerida}</strong></span>
-              <span className="item-row-cat">{CATEGORY_LABELS[item.categoria]}</span>
+              <span className="item-row-cat">{CATEGORY_LABELS[item.categoria] || `Cat. ${item.categoria}`}</span>
             </article>
           ))}
           {filteredItems.length === 0 && (
@@ -463,61 +683,16 @@ export default function App() {
           </div>
 
           <div className="carga-items-list">
-            {filteredItems.map((item) => {
-              const key = entryKey(selectedStore, item.id);
-              const entry = entryMap[key];
-              const hasEntry = entry && (entry.precioUnitario > 0 || entry.cantidad > 0);
-              return (
-                <article key={item.id} className={`item-card ${hayClass(item.hay)} ${entry?.inCart ? "in-cart" : ""}`}>
-                  {/* Compact item info */}
-                  <div className="item-row compact">
-                    <span className="item-row-name">{item.nombre}</span>
-                    <span className="item-row-stat">HAY <strong>{item.hay}</strong></span>
-                    <span className="item-row-stat">SUG <strong>{item.sugerida}</strong></span>
-                    <span className="item-row-cat">{CATEGORY_LABELS[item.categoria]}</span>
-                  </div>
-                  {/* Entry inputs + cart button */}
-                  <div className="entry-inputs">
-                    <label className="entry-label">
-                      <span>Precio</span>
-                      <input
-                        type="text"
-                        inputMode="decimal"
-                        value={entry?.precioUnitario ?? ""}
-                        onChange={(e) => updateEntry(item, { precioUnitario: parseDecimal(e.target.value) })}
-                      />
-                    </label>
-                    <label className="entry-label">
-                      <span>Cant.</span>
-                      <div className="qty-row">
-                        <button type="button" onClick={() => bumpQuantity(item, -1)}>−</button>
-                        <input
-                          type="text"
-                          inputMode="decimal"
-                          value={entry?.cantidad ?? ""}
-                          onChange={(e) => updateEntry(item, { cantidad: parseDecimal(e.target.value) })}
-                        />
-                        <button type="button" onClick={() => bumpQuantity(item, 1)}>+</button>
-                      </div>
-                    </label>
-                    <div className="entry-subtotal">
-                      ${(entry?.subtotal ?? 0).toFixed(2)}
-                    </div>
-                    {/* Cart toggle — only shown when there's an entry */}
-                    {hasEntry && (
-                      <button
-                        type="button"
-                        className={`cart-btn ${entry?.inCart ? "cart-active" : ""}`}
-                        onClick={() => toggleCart(item)}
-                        title={entry?.inCart ? "Quitar del carrito" : "Agregar al carrito"}
-                      >
-                        🛒
-                      </button>
-                    )}
-                  </div>
-                </article>
-              );
-            })}
+            {filteredItems.map((item) => (
+              <ItemCard
+                key={item.id}
+                item={item}
+                entry={entryMap[entryKey(selectedStore, item.id)]}
+                onUpdate={updateEntry}
+                onToggleCart={toggleCart}
+                onBumpQuantity={bumpQuantity}
+              />
+            ))}
             {filteredItems.length === 0 && (
               <p className="empty-msg">No hay artículos que coincidan con los filtros.</p>
             )}

@@ -1,11 +1,13 @@
-const CACHE_NAME = "appcompras-v2";
+const CACHE_NAME = "appcompras-v5";
 const APP_SHELL  = ["index.html", "manifest.webmanifest"];
 
 // Patterns that should NEVER be cached (Google OAuth & Sheets API)
 const BYPASS_PATTERNS = [
   "accounts.google.com",
   "oauth2.googleapis.com",
-  "sheets.googleapis.com"
+  "sheets.googleapis.com",
+  "script.google.com",
+  "script.googleusercontent.com"
 ];
 
 self.addEventListener("install", (event) => {
