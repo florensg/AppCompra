@@ -1,6 +1,7 @@
 import { 
   GoogleAuthProvider, 
   signInWithPopup, 
+  signInWithRedirect,
   signOut as firebaseSignOut, 
   onAuthStateChanged,
   User
@@ -13,9 +14,18 @@ const googleProvider = new GoogleAuthProvider();
  * Inicia sesión con Google usando el popup de Firebase Auth.
  * Nota: Ya no pedimos el scope de Spreadsheets aquí para evitar la pantalla roja.
  */
-export async function signIn(): Promise<User> {
-  const result = await signInWithPopup(auth, googleProvider);
-  return result.user;
+export async function signIn(): Promise<User | null> {
+  try {
+    const result = await signInWithPopup(auth, googleProvider);
+    return result.user;
+  } catch (error: any) {
+    const code = String(error?.code || "");
+    if (code === "auth/popup-blocked" || code === "auth/operation-not-supported-in-this-environment") {
+      await signInWithRedirect(auth, googleProvider);
+      return null;
+    }
+    throw error;
+  }
 }
 
 /**

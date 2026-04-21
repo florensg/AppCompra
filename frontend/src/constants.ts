@@ -1,6 +1,6 @@
 import { CategoryId, StoreName } from "./types";
 
-export const ACTIVE_STORES: StoreName[] = ["CHEEK", "CUCHER", "VITAL"];
+export const BASE_STORES: StoreName[] = ["CHEEK", "CUCHER", "VITAL"];
 
 export const CATEGORY_LABELS: Record<CategoryId, string> = {
   1: "Comestibles",

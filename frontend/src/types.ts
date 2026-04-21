@@ -33,6 +33,12 @@ export interface Ronda {
   createdAt: string;
 }
 
+export interface StoreConfig {
+  name: StoreName;
+  isBase: boolean;
+  isActive: boolean;
+}
+
 export interface StoreTotal {
   supermercado: StoreName;
   total: number;
@@ -43,6 +49,7 @@ export interface StoreTotal {
 export interface SyncJob {
   id: string;
   payload: Entry[];
+  stores?: StoreName[];
   attempts: number;
   createdAt: string;
 }
@@ -50,6 +57,7 @@ export interface SyncJob {
 export interface BootstrapResponse {
   items: Item[];
   latestPrices: Record<string, Partial<Record<string, number>>>;
+  stores: StoreName[];
   source?: "sheets" | "firestore";
 }
 

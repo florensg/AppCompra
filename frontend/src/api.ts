@@ -1,4 +1,4 @@
-import { BootstrapResponse, Entry, TotalsResponse } from "./types";
+import { BootstrapResponse, Entry, StoreName, TotalsResponse } from "./types";
 import { MOCK_ITEMS } from "./mockCatalog";
 import { getFirestoreBootstrap, saveEntriesToFirestore, getFirestoreTotals, syncCatalogToFirestore } from "./firestoreApi";
 
@@ -57,7 +57,7 @@ export async function fetchBootstrap(): Promise<BootstrapResponse> {
     const data = await fetchGas("bootstrap");
     if (data.items && data.items.length > 0) {
       void syncCatalogToFirestore(data.items);
-      return { ...data, source: "sheets" };
+      return { ...data, stores: Array.isArray(data.stores) ? data.stores : [], source: "sheets" };
     }
     throw new Error("La respuesta de Google Sheets está vacía o es inválida.");
   } catch (err) {
@@ -73,14 +73,14 @@ export async function fetchBootstrap(): Promise<BootstrapResponse> {
 /**
  * Guarda en Firestore y automáticamente intenta sincronizar con Google Sheets.
  */
-export async function sendEntriesBatch(entries: Entry[]): Promise<{ ok: boolean }> {
+export async function sendEntriesBatch(entries: Entry[], stores: StoreName[] = []): Promise<{ ok: boolean }> {
   await saveEntriesToFirestore(entries);
   
   if (navigator.onLine) {
     try {
       await fetchGas("entries/batch", {
         method: "POST",
-        body: JSON.stringify({ entries })
+        body: JSON.stringify({ entries, stores })
       });
       console.info("Sincronización con Google Sheets exitosa.");
     } catch (err) {
@@ -91,8 +91,8 @@ export async function sendEntriesBatch(entries: Entry[]): Promise<{ ok: boolean 
   return { ok: true };
 }
 
-export async function syncEntries(entries: Entry[]): Promise<{ ok: boolean }> {
-  return sendEntriesBatch(entries);
+export async function syncEntries(entries: Entry[], stores: StoreName[] = []): Promise<{ ok: boolean }> {
+  return sendEntriesBatch(entries, stores);
 }
 
 export async function fetchTotals(date?: string): Promise<TotalsResponse> {
@@ -117,4 +117,28 @@ export async function fetchRound(fecha: string): Promise<{ entries: any[] }> {
     console.warn(`No se pudo obtener la ronda del ${fecha} desde Sheets:`, err);
     return { entries: [] };
   }
+}
+
+export async function createCatalogItem(payload: { nombre: string; categoria: number; hay: number }): Promise<{ ok: boolean }> {
+  await fetchGas("items/create", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+  return { ok: true };
+}
+
+export async function updateCatalogItem(payload: { itemId: string; nombre: string; categoria: number; hay: number }): Promise<{ ok: boolean }> {
+  await fetchGas("items/update", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+  return { ok: true };
+}
+
+export async function deleteCatalogItem(payload: { itemId: string }): Promise<{ ok: boolean }> {
+  await fetchGas("items/delete", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+  return { ok: true };
 }

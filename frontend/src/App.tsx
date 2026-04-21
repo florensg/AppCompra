@@ -1,11 +1,19 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ACTIVE_STORES, CATEGORY_LABELS } from "./constants";
-import { fetchBootstrap, fetchRound, fetchTotals, sendEntriesBatch, syncEntries } from "./api";
+import { BASE_STORES, CATEGORY_LABELS } from "./constants";
+import {
+  createCatalogItem,
+  deleteCatalogItem,
+  fetchBootstrap,
+  fetchRound,
+  fetchTotals,
+  sendEntriesBatch,
+  syncEntries,
+  updateCatalogItem
+} from "./api";
 import { signIn, signOut as authSignOut, onAuthStatusChange } from "./auth";
 import { db } from "./db";
 import { listenToLiveEntries, saveDraftEntry } from "./firestoreApi";
-import { MOCK_ITEMS } from "./mockCatalog";
-import { CategoryId, Entry, Item, Ronda, StoreName, StoreTotal, SyncJob } from "./types";
+import { CategoryId, Entry, Item, Ronda, StoreConfig, StoreName, StoreTotal, SyncJob } from "./types";
 import { makeId, nowIso, parseDecimal, toMoney } from "./utils";
 import "./styles.css";
 
@@ -14,11 +22,77 @@ type PriorityMode = "orange-first" | "red-first";
 type PriorityFilter = "all" | "orange" | "red" | "none";
 
 const DEFAULT_VIEW: View = "carga";
+const STORES_STORAGE_KEY = "appcompras.storeConfigs.v1";
+const DEFAULT_INACTIVE_STORES: StoreName[] = ["MAXI CARREFOUR", "VEA"];
 
-const newRonda = (): Ronda => ({
+const normalizeStoreName = (name: string): string =>
+  name.trim().replace(/\s+/g, " ").toUpperCase();
+const normalizeProductName = (name: string): string =>
+  name.trim().replace(/\s+/g, " ").toLowerCase();
+
+const createStoreConfig = (name: StoreName, isBase: boolean, isActive: boolean): StoreConfig => ({
+  name,
+  isBase,
+  isActive
+});
+
+const buildDefaultStoreConfigs = (): StoreConfig[] =>
+  [
+    ...BASE_STORES.map((name) => createStoreConfig(name, true, true)),
+    ...DEFAULT_INACTIVE_STORES.map((name) => createStoreConfig(name, false, false))
+  ];
+
+const sortStoreConfigs = (stores: StoreConfig[]): StoreConfig[] => {
+  const baseRank = new Map(BASE_STORES.map((name, idx) => [name, idx]));
+  return [...stores].sort((a, b) => {
+    if (a.isBase && b.isBase) {
+      return (baseRank.get(a.name) ?? 999) - (baseRank.get(b.name) ?? 999);
+    }
+    if (a.isBase !== b.isBase) return a.isBase ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+};
+
+const mergeStoreConfigs = (incomingStores: StoreName[], localStores: StoreConfig[]): StoreConfig[] => {
+  const map = new Map<string, StoreConfig>();
+  buildDefaultStoreConfigs().forEach((store) => map.set(store.name, store));
+  localStores.forEach((store) => map.set(store.name, { ...store }));
+  incomingStores.forEach((rawName) => {
+    const name = normalizeStoreName(rawName);
+    if (!name) return;
+    const current = map.get(name);
+    map.set(
+      name,
+      current ?? createStoreConfig(name, BASE_STORES.includes(name), BASE_STORES.includes(name))
+    );
+  });
+  return sortStoreConfigs(Array.from(map.values()));
+};
+
+const loadStoredStoreConfigs = (): StoreConfig[] => {
+  try {
+    const raw = localStorage.getItem(STORES_STORAGE_KEY);
+    if (!raw) return buildDefaultStoreConfigs();
+    const parsed = JSON.parse(raw) as StoreConfig[];
+    if (!Array.isArray(parsed)) return buildDefaultStoreConfigs();
+    const normalized = parsed
+      .map((entry) => {
+        const name = normalizeStoreName(String(entry?.name ?? ""));
+        if (!name) return null;
+        const isBase = BASE_STORES.includes(name);
+        return createStoreConfig(name, isBase, isBase ? true : Boolean(entry?.isActive));
+      })
+      .filter((entry): entry is StoreConfig => entry !== null);
+    return mergeStoreConfigs([], normalized);
+  } catch {
+    return buildDefaultStoreConfigs();
+  }
+};
+
+const newRonda = (storesActivos: StoreName[]): Ronda => ({
   id: makeId(),
   fecha: nowIso().slice(0, 10),
-  storesActivos: ACTIVE_STORES,
+  storesActivos,
   createdAt: nowIso()
 });
 
@@ -26,8 +100,8 @@ const entryKey = (store: StoreName, itemId: string): string => `${store}::${item
 
 const CLIENT_ID = makeId();
 
-const initialTotals = (): StoreTotal[] =>
-  ACTIVE_STORES.map((store) => ({
+const initialTotals = (stores: StoreName[]): StoreTotal[] =>
+  stores.map((store) => ({
     supermercado: store,
     total: 0,
     itemsCount: 0,
@@ -139,25 +213,76 @@ const ItemCard = React.memo(({ item, entry, onUpdate, onToggleCart, onBumpQuanti
 });
 
 export default function App() {
+  const [storeConfigs, setStoreConfigs] = useState<StoreConfig[]>(() => loadStoredStoreConfigs());
+  const activeStores = useMemo(
+    () => sortStoreConfigs(storeConfigs.filter((store) => store.isActive)).map((store) => store.name),
+    [storeConfigs]
+  );
+  const inactiveStores = useMemo(
+    () => sortStoreConfigs(storeConfigs.filter((store) => !store.isActive)).map((store) => store.name),
+    [storeConfigs]
+  );
   const [view, setView] = useState<View>(DEFAULT_VIEW);
   const [items, setItems] = useState<Item[]>([]);
-  const [currentRonda, setCurrentRonda] = useState<Ronda>(newRonda());
-  const [selectedStore, setSelectedStore] = useState<StoreName>("CHEEK");
+  const [currentRonda, setCurrentRonda] = useState<Ronda>(() => newRonda(activeStores));
+  const [selectedStore, setSelectedStore] = useState<StoreName>(activeStores[0] ?? BASE_STORES[0]);
   const [search, setSearch] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
+  const [storeMenuOpen, setStoreMenuOpen] = useState(false);
+  const [showAddStoreInput, setShowAddStoreInput] = useState(false);
+  const [newStoreName, setNewStoreName] = useState("");
+  const [productMenuOpen, setProductMenuOpen] = useState(false);
+  const [editingItemId, setEditingItemId] = useState("");
+  const [productName, setProductName] = useState("");
+  const [productCategory, setProductCategory] = useState(1);
+  const [productHay, setProductHay] = useState(0);
   const [categoryFilter, setCategoryFilter] = useState<CategoryId | "all">("all");
   const [priorityMode, setPriorityMode] = useState<PriorityMode>("orange-first");
   const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>("all");
   // entryMap is intentionally NOT persisted across sessions — reset on load
   const [entryMap, setEntryMap] = useState<Record<string, Entry>>({});
-  const [totals, setTotals] = useState<StoreTotal[]>(initialTotals());
+  const [totals, setTotals] = useState<StoreTotal[]>(() => initialTotals(activeStores));
   const [status, setStatus] = useState("Cargando...");
   const [signedIn, setSignedIn] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const addStoreInputRef = useRef<HTMLInputElement>(null);
   const debounceTimerRef = useRef<Record<string, NodeJS.Timeout>>({});
   const idleTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    localStorage.setItem(STORES_STORAGE_KEY, JSON.stringify(storeConfigs));
+  }, [storeConfigs]);
+
+  useEffect(() => {
+    if (activeStores.length === 0) {
+      setSelectedStore(BASE_STORES[0]);
+      return;
+    }
+    if (!activeStores.includes(selectedStore)) {
+      setSelectedStore(activeStores[0]);
+    }
+  }, [activeStores, selectedStore]);
+
+  useEffect(() => {
+    setCurrentRonda((prev) => ({ ...prev, storesActivos: activeStores }));
+    setTotals((prev) => {
+      const byStore = new Map(prev.map((entry) => [entry.supermercado, entry]));
+      return activeStores.map((store) => {
+        const existing = byStore.get(store);
+        return existing
+          ? existing
+          : { supermercado: store, total: 0, itemsCount: 0, updatedAt: nowIso() };
+      });
+    });
+  }, [activeStores]);
+
+  useEffect(() => {
+    if (showAddStoreInput) {
+      setTimeout(() => addStoreInputRef.current?.focus(), 0);
+    }
+  }, [showAddStoreInput]);
 
   // Monitor Firebase Auth State
   useEffect(() => {
@@ -326,7 +451,7 @@ export default function App() {
 
   useEffect(() => {
     recalcTotals(entryMap);
-  }, [entryMap]);
+  }, [entryMap, activeStores]);
 
   const filteredItems = useMemo(() => {
     let list = items;
@@ -343,6 +468,18 @@ export default function App() {
     return [...list].sort((a, b) => hayPriority(a.hay, priorityMode) - hayPriority(b.hay, priorityMode));
   }, [items, search, categoryFilter, priorityFilter, priorityMode]);
 
+  const editingItem = useMemo(
+    () => items.find((item) => item.id === editingItemId),
+    [items, editingItemId]
+  );
+
+  useEffect(() => {
+    if (!editingItem) return;
+    setProductName(editingItem.nombre);
+    setProductCategory(editingItem.categoria);
+    setProductHay(editingItem.hay);
+  }, [editingItem]);
+
   async function bootstrap() {
     try {
       const data = await fetchBootstrap();
@@ -350,6 +487,7 @@ export default function App() {
         throw new Error("El catálogo de Google Sheets está vacío o no se pudo leer.");
       }
       setItems(data.items);
+      setStoreConfigs((prev) => mergeStoreConfigs(data.stores ?? [], prev));
       await db.itemsCache.put({ key: "catalog", items: data.items, savedAt: nowIso() });
       
       if (data.source === "sheets") {
@@ -367,6 +505,126 @@ export default function App() {
         setItems([]);
         setStatus(`⚠️ ERROR DE CONEXIÓN: ${String(error)}. Verificá que el enlace de Google Sheets sea correcto y público.`);
       }
+    }
+  }
+
+  function activateStore(storeName: StoreName) {
+    setStoreConfigs((prev) =>
+      sortStoreConfigs(prev.map((store) => (store.name === storeName ? { ...store, isActive: true } : store)))
+    );
+    setSelectedStore(storeName);
+    setStoreMenuOpen(false);
+    setShowAddStoreInput(false);
+    setStatus(`${storeName} ahora está activo.`);
+  }
+
+  function disableStore(storeName: StoreName) {
+    if (BASE_STORES.includes(storeName)) return;
+    setStoreConfigs((prev) =>
+      sortStoreConfigs(prev.map((store) => (store.name === storeName ? { ...store, isActive: false } : store)))
+    );
+    setStoreMenuOpen(false);
+    setShowAddStoreInput(false);
+    if (selectedStore === storeName) {
+      const fallback = activeStores.find((name) => name !== storeName) ?? BASE_STORES[0];
+      setSelectedStore(fallback);
+    }
+    setStatus(`${storeName} fue deshabilitado.`);
+  }
+
+  function addStore() {
+    const normalized = normalizeStoreName(newStoreName);
+    if (!normalized) {
+      setStatus("IngresÃ¡ un nombre de supermercado.");
+      return;
+    }
+    const existing = storeConfigs.find((store) => store.name === normalized);
+    if (existing) {
+      setStatus(existing.isActive ? `${normalized} ya existe y estÃ¡ activo.` : `${normalized} ya existe y estÃ¡ inactivo.`);
+      setShowAddStoreInput(false);
+      setNewStoreName("");
+      return;
+    }
+    setStoreConfigs((prev) => sortStoreConfigs([...prev, createStoreConfig(normalized, false, false)]));
+    setShowAddStoreInput(false);
+    setNewStoreName("");
+    setStatus(`${normalized} agregado. PodÃ©s activarlo desde el menÃº +.`);
+  }
+
+  function resetProductForm() {
+    setEditingItemId("");
+    setProductName("");
+    setProductCategory(1);
+    setProductHay(0);
+  }
+
+  async function handleCreateProduct() {
+    const nombre = productName.trim();
+    if (!nombre) {
+      setStatus("IngresÃ¡ el nombre del producto.");
+      return;
+    }
+    const exists = items.some((item) => normalizeProductName(item.nombre) === normalizeProductName(nombre));
+    if (exists) {
+      setStatus("Ese producto ya existe en el catÃ¡logo.");
+      return;
+    }
+    try {
+      await createCatalogItem({ nombre, categoria: productCategory, hay: productHay });
+      await bootstrap();
+      resetProductForm();
+      setStatus(`Producto agregado: ${nombre}.`);
+    } catch (error) {
+      setStatus(`No se pudo agregar el producto: ${String(error)}`);
+    }
+  }
+
+  async function handleUpdateProduct() {
+    if (!editingItem) {
+      setStatus("Selecciona un producto para modificar.");
+      return;
+    }
+    const nombre = productName.trim();
+    if (!nombre) {
+      setStatus("Ingresa el nombre del producto.");
+      return;
+    }
+    const exists = items.some(
+      (item) => item.id !== editingItem.id && normalizeProductName(item.nombre) === normalizeProductName(nombre)
+    );
+    if (exists) {
+      setStatus("Ya existe otro producto con ese nombre.");
+      return;
+    }
+    try {
+      await updateCatalogItem({
+        itemId: editingItem.id,
+        nombre,
+        categoria: productCategory,
+        hay: productHay
+      });
+      await bootstrap();
+      setStatus(`Producto actualizado: ${nombre}.`);
+    } catch (error) {
+      setStatus(`No se pudo actualizar el producto: ${String(error)}`);
+    }
+  }
+
+  async function handleDeleteProduct() {
+    if (!editingItem) {
+      setStatus("Selecciona un producto para eliminar.");
+      return;
+    }
+    const confirmed = window.confirm(`¿Eliminar ${editingItem.nombre}?`);
+    if (!confirmed) return;
+    try {
+      await deleteCatalogItem({ itemId: editingItem.id });
+      setEntryMap({});
+      await bootstrap();
+      resetProductForm();
+      setStatus("Producto eliminado.");
+    } catch (error) {
+      setStatus(`No se pudo eliminar el producto: ${String(error)}`);
     }
   }
 
@@ -421,7 +679,7 @@ export default function App() {
 
   function recalcTotals(map: Record<string, Entry>) {
     const rollup = new Map<StoreName, { total: number; itemsCount: number }>();
-    for (const store of ACTIVE_STORES) rollup.set(store, { total: 0, itemsCount: 0 });
+    for (const store of activeStores) rollup.set(store, { total: 0, itemsCount: 0 });
     Object.values(map)
       .filter((e) => e.inCart)
       .forEach((entry) => {
@@ -431,7 +689,7 @@ export default function App() {
         bucket.itemsCount += 1;
       });
     setTotals(
-      ACTIVE_STORES.map((store) => {
+      activeStores.map((store) => {
         const b = rollup.get(store)!;
         return { supermercado: store, total: toMoney(b.total), itemsCount: b.itemsCount, updatedAt: nowIso() };
       })
@@ -460,18 +718,19 @@ export default function App() {
       return;
     }
     const entriesWithFecha = cartEntries.map((e) => ({ ...e, fecha: currentRonda.fecha }));
+    const allStoreNames = sortStoreConfigs(storeConfigs).map((store) => store.name);
     await db.rondas.put(currentRonda);
     if (!navigator.onLine) {
-      const job: SyncJob = { id: makeId(), payload: entriesWithFecha, attempts: 0, createdAt: nowIso() };
+      const job: SyncJob = { id: makeId(), payload: entriesWithFecha, stores: allStoreNames, attempts: 0, createdAt: nowIso() };
       await db.syncQueue.put(job);
       setStatus("Sin internet: ronda guardada localmente para sincronizar.");
       return;
     }
     try {
-      await sendEntriesBatch(entriesWithFecha);
+      await sendEntriesBatch(entriesWithFecha, allStoreNames);
       setStatus("✅ Ronda sincronizada con Google Sheets.");
     } catch (error) {
-      const job: SyncJob = { id: makeId(), payload: entriesWithFecha, attempts: 1, createdAt: nowIso() };
+      const job: SyncJob = { id: makeId(), payload: entriesWithFecha, stores: allStoreNames, attempts: 1, createdAt: nowIso() };
       await db.syncQueue.put(job);
       setStatus(`❌ Error al guardar: ${String(error)}`);
     }
@@ -481,7 +740,7 @@ export default function App() {
     const jobs = await db.syncQueue.toArray();
     for (const job of jobs) {
       try {
-        await syncEntries(job.payload);
+        await syncEntries(job.payload, job.stores ?? []);
         await db.syncQueue.delete(job.id);
       } catch {
         await db.syncQueue.put({ ...job, attempts: job.attempts + 1 });
@@ -526,12 +785,10 @@ export default function App() {
     );
   }
 
-  const priorityPills: { label: string; value: PriorityFilter }[] = [
-    { label: "Todos", value: "all" },
-    { label: "🟡 Naranja", value: "orange" },
-    { label: "🔴 Rojo", value: "red" },
-    { label: "Sin color", value: "none" }
-  ];
+
+  const optionalActiveStores = activeStores.filter((store) => !BASE_STORES.includes(store));
+  const hasDisableOptions = optionalActiveStores.length > 0;
+  const hasStoreMenuOptions = inactiveStores.length > 0 || showAddStoreInput || hasDisableOptions;
 
   return (
     <div className="app-shell">
@@ -546,28 +803,7 @@ export default function App() {
             <span className="status-dot" />
             {isOnline ? "Online" : "Sin red"}
           </div>
-          {/* Expandable search */}
-          <div className={`search-wrap ${searchOpen ? "open" : ""}`}>
-            <button
-              type="button"
-              className="search-icon-btn"
-              onClick={() => { setSearchOpen(true); setTimeout(() => searchInputRef.current?.focus(), 50); }}
-              aria-label="Buscar"
-            >
-              🔍
-            </button>
-            <input
-              ref={searchInputRef}
-              className="search-input"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Buscar artículo..."
-              onBlur={() => { if (!search) setSearchOpen(false); }}
-            />
-            {searchOpen && search && (
-              <button type="button" className="search-clear" onClick={() => { setSearch(""); setSearchOpen(false); }}>✕</button>
-            )}
-          </div>
+
           <button id="btn-signout" type="button" className="badge signout-btn" onClick={handleSignOut}>Salir</button>
         </div>
       </header>
@@ -601,30 +837,51 @@ export default function App() {
             setCategoryFilter(v === "all" ? "all" : Number(v));
           }}
         >
-          <option value="all">Todas las categorías</option>
+          <option value="all">Todo</option>
           {Array.from(new Set(items.map(i => i.categoria))).sort((a,b)=>a-b).map(cid => (
              <option key={cid} value={cid}>{CATEGORY_LABELS[cid] || `Categoría ${cid}`}</option>
           ))}
         </select>
         <div className="priority-controls">
-          {priorityPills.map((p) => (
+          <div className={`search-inline ${searchOpen || search ? "open" : ""}`}>
             <button
-              key={p.value}
               type="button"
-              className={`priority-pill ${priorityFilter === p.value ? "active" : ""}`}
-              onClick={() => setPriorityFilter(p.value)}
+              className="search-inline-btn"
+              onClick={() => { setSearchOpen(true); setTimeout(() => searchInputRef.current?.focus(), 50); }}
+              aria-label="Buscar"
             >
-              {p.label}
+              🔍
             </button>
-          ))}
-          <button
-            type="button"
-            className="priority-pill order-toggle"
-            title="Cambiar orden de prioridad"
-            onClick={() => setPriorityMode((m) => m === "orange-first" ? "red-first" : "orange-first")}
+            <input
+              ref={searchInputRef}
+              className="search-inline-input"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Buscar..."
+              onBlur={() => { if (!search) setSearchOpen(false); }}
+            />
+            {search && (
+              <button type="button" className="search-clear" onClick={() => { setSearch(""); setSearchOpen(false); }}>✕</button>
+            )}
+          </div>
+          <select
+            value={priorityFilter}
+            onChange={(e) => setPriorityFilter(e.target.value as PriorityFilter)}
+            title="Filtrar por criticidad"
           >
-            {priorityMode === "orange-first" ? "↑🟡" : "↑🔴"}
-          </button>
+            <option value="all">🔘 Todos</option>
+            <option value="orange">🟡 Naranja</option>
+            <option value="red">🔴 Rojo</option>
+            <option value="none">⚪ Sin color</option>
+          </select>
+          <select
+            value={priorityMode}
+            onChange={(e) => setPriorityMode(e.target.value as PriorityMode)}
+            title="Orden de criticidad"
+          >
+            <option value="orange-first">Asc: 🟡 Naranja, 🔴 Rojo</option>
+            <option value="red-first">Desc: 🔴 Rojo, 🟡 Naranja</option>
+          </select>
         </div>
       </section>
  
@@ -650,7 +907,7 @@ export default function App() {
         <section className="panel carga-panel">
           <div className="carga-sticky-header">
             <div className="store-switcher">
-              {ACTIVE_STORES.map((store) => (
+              {activeStores.map((store) => (
                 <button
                   key={store}
                   type="button"
@@ -660,6 +917,76 @@ export default function App() {
                   {store}
                 </button>
               ))}
+              <div className="store-menu-wrap">
+                <button
+                  type="button"
+                  className={`store add-store-btn ${storeMenuOpen ? "active" : ""}`}
+                  onClick={() => {
+                    setStoreMenuOpen((prev) => !prev);
+                    setShowAddStoreInput(false);
+                    setNewStoreName("");
+                  }}
+                  title="Gestionar supermercados"
+                >
+                  Super {storeMenuOpen ? "▾" : "▸"}
+                </button>
+                {storeMenuOpen && (
+                  <div className="store-menu">
+                    <button
+                      type="button"
+                      className="store-menu-action"
+                      onClick={() => {
+                        setShowAddStoreInput(true);
+                      }}
+                    >
+                      + Agregar supermercado
+                    </button>
+                    {showAddStoreInput && (
+                      <div className="store-add-form">
+                        <input
+                          ref={addStoreInputRef}
+                          type="text"
+                          value={newStoreName}
+                          onChange={(e) => setNewStoreName(e.target.value)}
+                          placeholder="Nombre del supermercado"
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              addStore();
+                            }
+                          }}
+                        />
+                        <button type="button" onClick={addStore}>Agregar</button>
+                      </div>
+                    )}
+                    {inactiveStores.map((store) => (
+                      <button
+                        key={store}
+                        type="button"
+                        className="store-menu-item"
+                        onClick={() => activateStore(store)}
+                      >
+                        {store}
+                      </button>
+                    ))}
+                    {hasDisableOptions && (
+                      <div className="store-menu-group-label">Activos</div>
+                    )}
+                    {optionalActiveStores.map((store) => (
+                      <button
+                        key={`disable-${store}`}
+                        type="button"
+                        className="store-menu-item warn"
+                        onClick={() => disableStore(store)}
+                      >
+                        Ocultar {store}
+                      </button>
+                    ))}
+                    {!hasStoreMenuOptions && (
+                      <p className="store-menu-empty">No hay supermercados inactivos.</p>
+                    )}
+                  </div>
+                )}
+              </div>
               <div className="store-total">
                 Carrito: <strong>${currentStoreTotal.toFixed(2)}</strong>
               </div>
@@ -676,10 +1003,104 @@ export default function App() {
                   }}
                 />
               </label>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => {
+                  setProductMenuOpen((prev) => !prev);
+                  if (!productMenuOpen) resetProductForm();
+                }}
+              >
+                Productos {productMenuOpen ? "▾" : "▸"}
+              </button>
               <button className="primary" id="btn-save" type="button" onClick={() => void saveCurrentRound()}>
                 Guardar ronda
               </button>
             </div>
+            {productMenuOpen && (
+              <div className="product-admin-panel">
+                <div className="product-admin-row">
+                  <label className="fecha-label">
+                    Producto existente
+                    <select
+                      value={editingItemId}
+                      onChange={(e) => {
+                        const id = e.target.value;
+                        setEditingItemId(id);
+                        if (id) {
+                          const found = items.find((i) => i.id === id);
+                          if (found) {
+                            setProductName(found.nombre);
+                            setProductCategory(found.categoria);
+                            setProductHay(found.hay);
+                          }
+                        } else {
+                          resetProductForm();
+                        }
+                      }}
+                    >
+                      <option value="">Nuevo producto...</option>
+                      {items.map((item) => (
+                        <option key={item.id} value={item.id}>{item.nombre} — HAY: {item.hay}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <div className="product-admin-row">
+                  <label className="fecha-label">
+                    Nombre
+                    <input
+                      type="text"
+                      value={productName}
+                      onChange={(e) => setProductName(e.target.value)}
+                      placeholder="Ej: Yerba 1kg"
+                    />
+                  </label>
+                  <label className="fecha-label">
+                    CategorÃ­a
+                    <select
+                      value={String(productCategory)}
+                      onChange={(e) => setProductCategory(Number(e.target.value) || 1)}
+                    >
+                      {Object.entries(CATEGORY_LABELS).map(([id, label]) => (
+                        <option key={id} value={id}>{label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="fecha-label">
+                    HAY
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={String(productHay)}
+                      onChange={(e) => setProductHay(Math.max(0, Number(e.target.value) || 0))}
+                    />
+                  </label>
+                </div>
+                <div className="product-admin-actions">
+                  <button type="button" className="secondary" onClick={() => void handleCreateProduct()}>
+                    Agregar
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={!editingItemId}
+                    onClick={() => void handleUpdateProduct()}
+                  >
+                    Modificar
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary danger"
+                    disabled={!editingItemId}
+                    onClick={() => void handleDeleteProduct()}
+                  >
+                    Eliminar
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="carga-items-list">
@@ -705,7 +1126,7 @@ export default function App() {
         <section className="panel">
           <div className="compare-header">
             <div className="compare-name-col">Producto / HAY</div>
-            {ACTIVE_STORES.map((s) => (
+            {activeStores.map((s) => (
               <div key={s} className="compare-store-col">
                 <div className="compare-store-name">{s}</div>
                 <div className="compare-store-total">
@@ -716,7 +1137,7 @@ export default function App() {
           </div>
           <div className="compare-body">
             {filteredItems.map((item) => {
-              const prices = ACTIVE_STORES.map((s) => {
+              const prices = activeStores.map((s) => {
                 const e = entryMap[entryKey(s, item.id)];
                 return e ? { subtotal: e.subtotal, inCart: e.inCart } : null;
               });
@@ -730,7 +1151,7 @@ export default function App() {
                   </div>
                   {prices.map((p, i) => (
                     <div
-                      key={ACTIVE_STORES[i]}
+                      key={activeStores[i]}
                       className={`compare-price-col ${p && p.subtotal > 0 && p.subtotal === minPrice ? "best-price" : ""} ${p?.inCart ? "is-cart" : ""}`}
                     >
                       {p && p.subtotal > 0 ? (

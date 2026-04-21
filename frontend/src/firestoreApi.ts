@@ -25,7 +25,7 @@ export async function getFirestoreBootstrap(): Promise<BootstrapResponse> {
   const itemsSnap = await getDocs(collection(db, ITEMS_COL));
   const items: Item[] = itemsSnap.docs.map(d => ({ id: d.id, ...d.data() } as Item));
   const latestPrices: Record<string, Partial<Record<string, number>>> = {};
-  return { items, latestPrices };
+  return { items, latestPrices, stores: [] };
 }
 
 /**
