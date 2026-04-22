@@ -12,7 +12,7 @@ import {
 } from "./api";
 import { signIn, signOut as authSignOut, onAuthStatusChange } from "./auth";
 import { db } from "./db";
-import { listenToLiveEntries, saveDraftEntry } from "./firestoreApi";
+import { cleanupDuplicateEntriesForDate, getOrCreateLiveSessionId, listenToLiveEntries, saveDraftEntry } from "./firestoreApi";
 import { CategoryId, Entry, Item, Ronda, StoreConfig, StoreName, StoreTotal, SyncJob } from "./types";
 import { makeId, nowIso, parseDecimal, toMoney } from "./utils";
 import "./styles.css";
@@ -23,10 +23,16 @@ type PriorityFilter = "all" | "orange" | "red" | "none";
 
 const DEFAULT_VIEW: View = "carga";
 const STORES_STORAGE_KEY = "appcompras.storeConfigs.v1";
-const DEFAULT_INACTIVE_STORES: StoreName[] = ["MAXI CARREFOUR", "VEA"];
+const DEFAULT_INACTIVE_STORES: StoreName[] = ["MAXI", "VEA"];
 
-const normalizeStoreName = (name: string): string =>
-  name.trim().replace(/\s+/g, " ").toUpperCase();
+const STORE_ALIASES: Record<string, string> = {
+  "MAXI CARREFOUR": "MAXI"
+};
+
+const normalizeStoreName = (name: string): string => {
+  const normalized = name.trim().replace(/\s+/g, " ").toUpperCase();
+  return STORE_ALIASES[normalized] ?? normalized;
+};
 const normalizeProductName = (name: string): string =>
   name.trim().replace(/\s+/g, " ").toLowerCase();
 
@@ -107,6 +113,14 @@ const initialTotals = (stores: StoreName[]): StoreTotal[] =>
     itemsCount: 0,
     updatedAt: nowIso()
   }));
+
+const entryTimestamp = (entry: Partial<Entry> | null | undefined): number => {
+  if (!entry) return 0;
+  const raw = entry.updatedAt ?? entry.createdAt;
+  if (!raw) return 0;
+  const t = Date.parse(String(raw));
+  return Number.isFinite(t) ? t : 0;
+};
 
 // ── Priority helpers ─────────────────────────────────────────────
 const hayClass = (hay: number): string =>
@@ -246,6 +260,8 @@ export default function App() {
   const [signedIn, setSignedIn] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [allowFirestoreLiveForDate, setAllowFirestoreLiveForDate] = useState(false);
+  const [liveSessionId, setLiveSessionId] = useState<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const addStoreInputRef = useRef<HTMLInputElement>(null);
   const debounceTimerRef = useRef<Record<string, NodeJS.Timeout>>({});
@@ -333,8 +349,8 @@ export default function App() {
       idleTimerRef.current = setTimeout(async () => {
         setStatus("Inactividad detectada. Guardando y cerrando sesión...");
         // Guardamos automáticamente antes de salir
-        const cartEntries = Object.values(entryMap).filter((e) => e.inCart);
-        if (cartEntries.length > 0) {
+        const entriesToSave = Object.values(entryMap).filter((e) => e.inCart || e.precioUnitario > 0 || e.cantidad > 0);
+        if (entriesToSave.length > 0) {
           try {
             await saveCurrentRound();
           } catch (e) {
@@ -362,9 +378,14 @@ export default function App() {
     if (!signedIn || !currentRonda.fecha) return;
     
     async function loadHistory() {
-      setStatus(`Buscando datos del ${currentRonda.fecha} en Sheets...`);
+      const targetDate = currentRonda.fecha;
+      if (!targetDate) return;
+      setStatus(`Buscando datos del ${targetDate} en Sheets...`);
       try {
-        const { entries: sheetEntries } = await fetchRound(currentRonda.fecha!);
+        const sessionId = await getOrCreateLiveSessionId(targetDate);
+        setLiveSessionId(sessionId);
+        const { entries: sheetEntries } = await fetchRound(targetDate);
+        setAllowFirestoreLiveForDate(true);
         if (sheetEntries.length > 0) {
           setEntryMap(prev => {
             const next = { ...prev };
@@ -377,7 +398,8 @@ export default function App() {
                   ...se,
                   id: makeId(),
                   rondaId: currentRonda.id,
-                  fecha: currentRonda.fecha,
+                  sessionId,
+                  fecha: targetDate,
                   subtotal: toMoney(se.precioUnitario * se.cantidad),
                   inCart: true,
                   offline: false,
@@ -389,25 +411,35 @@ export default function App() {
           });
           setStatus(`Se sincronizaron ${sheetEntries.length} artículos del historial.`);
         } else {
-          // Si no hay datos, nos aseguramos de no mostrar basura de fechas anteriores
-          // Pero con cuidado de no borrar lo que el compañero está editando ahora mismo
-          setStatus(`No hay registros para el ${currentRonda.fecha}.`);
+          setStatus(`No hay registros en Sheets para ${targetDate}. Sesión colaborativa activa.`);
         }
       } catch (err) {
+        setAllowFirestoreLiveForDate(false);
+        setLiveSessionId(null);
         console.error("Error cargando historial:", err);
       }
     }
 
     // Al cambiar la fecha, primero limpiamos para que no se vea data vieja 
     // pero el listener de Firebase (en el otro useEffect) traerá lo nuevo
+    setAllowFirestoreLiveForDate(false);
+    setLiveSessionId(null);
     setEntryMap({}); 
     void loadHistory();
   }, [signedIn, currentRonda.fecha]);
 
+  // Limpieza de duplicados históricos del día para evitar que reaparezcan valores viejos.
+  useEffect(() => {
+    if (!signedIn || !currentRonda.fecha || !liveSessionId) return;
+    void cleanupDuplicateEntriesForDate(currentRonda.fecha, liveSessionId).catch((err) => {
+      console.warn("No se pudo limpiar duplicados en Firestore:", err);
+    });
+  }, [signedIn, currentRonda.fecha, liveSessionId]);
+
   // Sync en vivo del carrito (Firestore) para la fecha seleccionada
   useEffect(() => {
-    if (!signedIn || !currentRonda.fecha) return;
-    const unsub = listenToLiveEntries(currentRonda.fecha, (liveEntries) => {
+    if (!signedIn || !currentRonda.fecha || !allowFirestoreLiveForDate || !liveSessionId) return;
+    const unsub = listenToLiveEntries(currentRonda.fecha, liveSessionId, (liveEntries) => {
       setEntryMap(prev => {
         const next = { ...prev };
         let changed = false;
@@ -416,8 +448,13 @@ export default function App() {
           if ((le as any).sender === CLIENT_ID) return;
 
           const key = entryKey(le.supermercado, le.itemId);
+          const local = prev[key];
+          const localTs = entryTimestamp(local);
+          const remoteTs = entryTimestamp(le);
+          // No sobrescribir edición local más nueva con datos remotos viejos.
+          if (local && localTs > 0 && remoteTs > 0 && localTs >= remoteTs) return;
           // Omitir actualización si el valor local es idéntico al de la nube
-          if (JSON.stringify(prev[key]) !== JSON.stringify(le)) {
+          if (JSON.stringify(local) !== JSON.stringify(le)) {
             next[key] = le;
             changed = true;
           }
@@ -426,7 +463,7 @@ export default function App() {
       });
     });
     return () => unsub();
-  }, [signedIn, currentRonda.fecha]);
+  }, [signedIn, currentRonda.fecha, allowFirestoreLiveForDate, liveSessionId]);
 
   async function handleSignIn() {
     setAuthLoading(true);
@@ -637,6 +674,7 @@ export default function App() {
     const entry: Entry = {
       id: current?.id ?? makeId(),
       rondaId: currentRonda.id,
+      sessionId: liveSessionId ?? undefined,
       fecha: currentRonda.fecha,
       supermercado: selectedStore,
       itemId: item.id,
@@ -646,6 +684,7 @@ export default function App() {
       inCart: current?.inCart ?? false,
       offline: !navigator.onLine,
       createdAt: current?.createdAt ?? nowIso(),
+      updatedAt: nowIso(),
       sender: CLIENT_ID, // Adjuntamos el ID del dispositivo
     };
     setEntryMap((prev) => ({ ...prev, [key]: entry }));
@@ -665,7 +704,7 @@ export default function App() {
     const key = entryKey(selectedStore, item.id);
     const current = entryMap[key];
     if (!current) return;
-    const unsigned = { ...current, inCart: !current.inCart, sender: CLIENT_ID };
+    const unsigned = { ...current, inCart: !current.inCart, updatedAt: nowIso(), sender: CLIENT_ID };
     setEntryMap((prev) => ({ ...prev, [key]: unsigned }));
     saveDraftEntry(unsigned);
   }
@@ -706,19 +745,28 @@ export default function App() {
       setStatus("⚠️ La fecha es obligatoria. Seleccioná una fecha antes de guardar la ronda.");
       return;
     }
-    // Only save entries that are "inCart"
-    const cartEntries = Object.values(entryMap).filter((e) => e.inCart);
-    if (cartEntries.length === 0) {
-      setStatus("No hay artículos en el carrito. Marcá con 🛒 los artículos a guardar.");
+    const activeStoreSet = new Set(activeStores.map((s) => normalizeStoreName(String(s))));
+    // Guardar los que están en el carrito o tienen algún dato cargado (para comparar)
+    const entriesToSave = Object.values(entryMap).filter((e) => {
+      const hasData = e.inCart || e.precioUnitario > 0 || e.cantidad > 0;
+      if (!hasData) return false;
+      return activeStoreSet.has(normalizeStoreName(String(e.supermercado)));
+    });
+    if (entriesToSave.length === 0) {
+      setStatus("No hay artículos cargados o en carrito para guardar.");
       return;
     }
-    const invalid = cartEntries.find((e) => e.precioUnitario < 0 || e.cantidad <= 0);
+    const invalid = entriesToSave.find((e) => e.precioUnitario < 0 || (e.inCart && e.cantidad <= 0));
     if (invalid) {
       setStatus("Hay ítems inválidos: verificá precio y cantidad.");
       return;
     }
-    const entriesWithFecha = cartEntries.map((e) => ({ ...e, fecha: currentRonda.fecha }));
-    const allStoreNames = sortStoreConfigs(storeConfigs).map((store) => store.name);
+    const entriesWithFecha = entriesToSave.map((e) => ({
+      ...e,
+      fecha: currentRonda.fecha,
+      sessionId: e.sessionId ?? liveSessionId ?? undefined
+    }));
+    const allStoreNames = [...new Set(activeStores.map((s) => normalizeStoreName(String(s))).filter(Boolean))];
     await db.rondas.put(currentRonda);
     if (!navigator.onLine) {
       const job: SyncJob = { id: makeId(), payload: entriesWithFecha, stores: allStoreNames, attempts: 0, createdAt: nowIso() };
@@ -738,9 +786,18 @@ export default function App() {
 
   async function flushSyncQueue() {
     const jobs = await db.syncQueue.toArray();
+    const activeStoreSet = new Set(activeStores.map((s) => normalizeStoreName(String(s))));
+    const activeStoreNames = [...activeStoreSet];
     for (const job of jobs) {
       try {
-        await syncEntries(job.payload, job.stores ?? []);
+        const filteredPayload = (job.payload ?? []).filter((entry) =>
+          activeStoreSet.has(normalizeStoreName(String(entry.supermercado)))
+        );
+        if (filteredPayload.length === 0) {
+          await db.syncQueue.delete(job.id);
+          continue;
+        }
+        await syncEntries(filteredPayload, activeStoreNames);
         await db.syncQueue.delete(job.id);
       } catch {
         await db.syncQueue.put({ ...job, attempts: job.attempts + 1 });

@@ -14,6 +14,7 @@ export interface Item {
 export interface Entry {
   id: string;
   rondaId: string;
+  sessionId?: string;
   fecha: string | null;
   supermercado: StoreName;
   itemId: string;
@@ -23,6 +24,7 @@ export interface Entry {
   inCart: boolean;
   offline: boolean;
   createdAt: string;
+  updatedAt?: string;
   sender?: string;
 }
 

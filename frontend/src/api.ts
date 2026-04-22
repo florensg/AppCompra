@@ -82,9 +82,23 @@ export async function sendEntriesBatch(entries: Entry[], stores: StoreName[] = [
         method: "POST",
         body: JSON.stringify({ entries, stores })
       });
-      console.info("Sincronización con Google Sheets exitosa.");
+      // Como POST va en no-cors, verificamos por lectura que el impacto exista en Sheets.
+      const fecha = entries[0]?.fecha;
+      if (fecha) {
+        const verification = await fetchGas(`round?fecha=${fecha}`);
+        const remoteEntries = Array.isArray(verification?.entries) ? verification.entries : [];
+        const expectedKeys = new Set(entries.map((e) => `${String(e.supermercado).toUpperCase()}::${e.itemId}`));
+        const foundAny = remoteEntries.some((e: any) =>
+          expectedKeys.has(`${String(e?.supermercado ?? "").toUpperCase()}::${String(e?.itemId ?? "")}`)
+        );
+        if (!foundAny) {
+          throw new Error("No se pudo confirmar la escritura en Google Sheets.");
+        }
+      }
+      console.info("Sincronización con Google Sheets verificada.");
     } catch (err) {
       console.warn("No se pudo sincronizar con Sheets ahora, los datos están seguros en Firestore:", err);
+      throw err;
     }
   }
   

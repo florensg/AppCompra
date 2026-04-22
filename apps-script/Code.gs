@@ -35,6 +35,15 @@ function handleRequest_(e) {
 
     return jsonResponse_({ ok: false, error: "Ruta no encontrada: " + path }, 404);
   } catch (error) {
+    try {
+      const ss = getSpreadsheet_();
+      const sheet = ss.getSheetByName(SHEET_NAME);
+      if (sheet) {
+        sheet.getRange("Z1").setValue("Error: " + String(error) + " | Stack: " + error.stack);
+      }
+    } catch (e) {
+      // Ignorar si falla el log
+    }
     return jsonResponse_({ ok: false, error: String(error) }, 500);
   }
 }
@@ -106,7 +115,7 @@ function saveBatch_(entries, incomingStores) {
   let storeColumns = existingDateColumns;
 
   if (!storeColumns) {
-    const allStores = buildOrderedStores_(incomingStores);
+    const allStores = mergedStoresForBatch_(incomingStores, entries);
     const numCols = allStores.length;
     const startCol = 4;
 
@@ -118,12 +127,15 @@ function saveBatch_(entries, incomingStores) {
     }
 
     if (compras.getMaxColumns() >= startCol + numCols) {
-      const sourceRange = compras.getRange(1, startCol + numCols, compras.getMaxRows(), numCols);
-      const targetRange = compras.getRange(1, startCol, compras.getMaxRows(), numCols);
+      const numRows = Math.max(compras.getMaxRows() - 1, 1);
+      const sourceRange = compras.getRange(2, startCol + numCols, numRows, 1);
+      const targetRange = compras.getRange(2, startCol, numRows, numCols);
       sourceRange.copyTo(targetRange, SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
     }
 
     const fechaRange = compras.getRange(1, startCol, 1, numCols);
+    const mergedRanges = fechaRange.getMergedRanges();
+    if (mergedRanges) mergedRanges.forEach(r => r.breakApart());
     fechaRange.merge();
     fechaRange.setValue("'" + normalizedFecha);
     fechaRange.setHorizontalAlignment("center");
@@ -134,10 +146,54 @@ function saveBatch_(entries, incomingStores) {
       const colLetter = columnToLetter_(startCol + i);
       compras.getRange(3, startCol + i).setFormula(`=SUM(${colLetter}4:${colLetter})`);
     }
+    applyDateBlockOuterBorders_(compras, startCol, startCol + numCols - 1);
 
     storeColumns = {};
     for (let i = 0; i < allStores.length; i++) {
       storeColumns[allStores[i]] = startCol + i;
+    }
+  } else {
+    // Si ya existen las columnas para la fecha actual, verificar si se agregaron nuevos supermercados
+    const allStores = mergedStoresForBatch_(incomingStores, entries);
+    const missingStores = allStores.filter(store => !storeColumns[store]);
+
+    if (missingStores.length > 0) {
+      const colIndices = Object.keys(storeColumns).map(k => storeColumns[k]);
+      const dateBlockStartCol = Math.min(...colIndices);
+      const dateBlockEndCol = Math.max(...colIndices);
+      const numToInsert = missingStores.length;
+      
+      const insertAt = dateBlockEndCol + 1;
+      
+      const maxCols = compras.getMaxColumns();
+      if (insertAt <= maxCols) {
+        compras.insertColumns(insertAt, numToInsert);
+      } else {
+        compras.insertColumnsAfter(maxCols, numToInsert);
+      }
+      
+      const numRows = Math.max(compras.getMaxRows() - 1, 1);
+      const sourceRange = compras.getRange(2, dateBlockEndCol, numRows, 1);
+      if (compras.getMaxColumns() >= insertAt) {
+        const targetRange = compras.getRange(2, insertAt, numRows, numToInsert);
+        sourceRange.copyTo(targetRange, SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
+      }
+      
+      const fechaRange = compras.getRange(1, dateBlockStartCol, 1, dateBlockEndCol - dateBlockStartCol + 1 + numToInsert);
+      const mergedRanges = fechaRange.getMergedRanges();
+      if (mergedRanges) mergedRanges.forEach(r => r.breakApart());
+      fechaRange.merge();
+      fechaRange.setValue("'" + normalizedFecha);
+      fechaRange.setHorizontalAlignment("center");
+      
+      compras.getRange(2, insertAt, 1, numToInsert).setValues([missingStores]);
+      
+      for (let i = 0; i < numToInsert; i++) {
+        const colLetter = columnToLetter_(insertAt + i);
+        compras.getRange(3, insertAt + i).setFormula(`=SUM(${colLetter}4:${colLetter})`);
+        storeColumns[missingStores[i]] = insertAt + i;
+      }
+      applyDateBlockOuterBorders_(compras, dateBlockStartCol, dateBlockEndCol + numToInsert);
     }
   }
 
@@ -232,6 +288,22 @@ function buildOrderedStores_(stores) {
   return [...BASE_STORES, ...extras];
 }
 
+/** Incluye siempre los supermercados que vienen en las entradas (evita perder columnas si `stores` viene vacío o desactualizado). */
+function mergedStoresForBatch_(incomingStores, entries) {
+  const raw = [];
+  if (Array.isArray(incomingStores)) {
+    incomingStores.forEach((s) => {
+      if (s != null && String(s).trim()) raw.push(s);
+    });
+  }
+  if (Array.isArray(entries)) {
+    entries.forEach((e) => {
+      if (e && e.supermercado != null && String(e.supermercado).trim()) raw.push(e.supermercado);
+    });
+  }
+  return buildOrderedStores_(raw);
+}
+
 function normalizeStoreName_(value) {
   return normalizeText_(value).toUpperCase();
 }
@@ -249,6 +321,18 @@ function columnToLetter_(column) {
     column = (column - temp - 1) / 26;
   }
   return letter;
+}
+
+/**
+ * Dibuja solo los bordes externos del bloque de supermercados de una fecha:
+ * - borde izquierdo en la primera columna del bloque
+ * - borde derecho en la ultima columna del bloque
+ */
+function applyDateBlockOuterBorders_(sheet, startCol, endCol) {
+  if (!sheet || !startCol || !endCol || endCol < startCol) return;
+  const numRows = Math.max(sheet.getMaxRows(), 1);
+  sheet.getRange(1, startCol, numRows, 1).setBorder(null, true, null, null, null, null);
+  sheet.getRange(1, endCol, numRows, 1).setBorder(null, null, null, true, null, null);
 }
 
 function jsonResponse_(obj) {
