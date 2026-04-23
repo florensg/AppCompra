@@ -11,7 +11,7 @@ import { signIn, signOut as authSignOut, onAuthStatusChange } from "./auth";
 import { db } from "./db";
 import { cleanupDuplicateEntriesForDate, getOrCreateLiveSessionId, listenToLiveEntries, saveDraftEntry } from "./firestoreApi";
 import { CategoryId, Entry, Item, Ronda, StoreName, StoreTotal, SyncJob } from "./types";
-import { makeId, nowIso, toMoney } from "./utils";
+import { makeId, nowIso, todayLocalIso, toMoney } from "./utils";
 import { LoginScreen } from "./features/auth";
 import { ShoppingView } from "./features/shopping";
 import { ComparisonView } from "./features/comparison";
@@ -33,7 +33,7 @@ const normalizeProductName = (name: string): string =>
   name.trim().replace(/\s+/g, " ").toLowerCase();
 const newRonda = (storesActivos: StoreName[]): Ronda => ({
   id: makeId(),
-  fecha: nowIso().slice(0, 10),
+  fecha: todayLocalIso(),
   storesActivos,
   createdAt: nowIso()
 });
