@@ -1,0 +1,26 @@
+﻿@import "./tokens/css-variables.css";
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-family-base);
+  color: var(--color-text-primary);
+  background:
+    radial-gradient(circle at top right, rgba(47, 158, 98, 0.12), transparent 45%),
+    var(--color-bg-canvas);
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-family-display);
+}

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+﻿import React, { useEffect, useMemo, useRef, useState } from "react";
 import { BASE_STORES, CATEGORY_LABELS } from "./constants";
 import {
   createCatalogItem,
@@ -13,87 +13,25 @@ import {
 import { signIn, signOut as authSignOut, onAuthStatusChange } from "./auth";
 import { db } from "./db";
 import { cleanupDuplicateEntriesForDate, getOrCreateLiveSessionId, listenToLiveEntries, saveDraftEntry } from "./firestoreApi";
-import { CategoryId, Entry, Item, Ronda, StoreConfig, StoreName, StoreTotal, SyncJob } from "./types";
-import { makeId, nowIso, parseDecimal, toMoney } from "./utils";
+import { CategoryId, Entry, Item, Ronda, StoreName, StoreTotal, SyncJob } from "./types";
+import { makeId, nowIso, toMoney } from "./utils";
+import { LoginScreen } from "./features/auth/components/LoginScreen";
+import { ItemCard } from "./features/round/components/ItemCard";
+import { AppHeader } from "./shared/ui/AppHeader";
+import {
+  createStoreConfig,
+  mergeStoreConfigs,
+  normalizeStoreName,
+  sortStoreConfigs,
+  useStoreConfigs
+} from "./features/stores/hooks/useStoreConfigs";
+import { PriorityFilter, PriorityMode, useItemFilters } from "./features/catalog/hooks/useItemFilters";
 import "./styles.css";
 
 type View = "lista" | "carga" | "comparacion";
-type PriorityMode = "orange-first" | "red-first";
-type PriorityFilter = "all" | "orange" | "red" | "none";
-
 const DEFAULT_VIEW: View = "carga";
-const STORES_STORAGE_KEY = "appcompras.storeConfigs.v1";
-const DEFAULT_INACTIVE_STORES: StoreName[] = ["MAXI", "VEA"];
-
-const STORE_ALIASES: Record<string, string> = {
-  "MAXI CARREFOUR": "MAXI"
-};
-
-const normalizeStoreName = (name: string): string => {
-  const normalized = name.trim().replace(/\s+/g, " ").toUpperCase();
-  return STORE_ALIASES[normalized] ?? normalized;
-};
 const normalizeProductName = (name: string): string =>
   name.trim().replace(/\s+/g, " ").toLowerCase();
-
-const createStoreConfig = (name: StoreName, isBase: boolean, isActive: boolean): StoreConfig => ({
-  name,
-  isBase,
-  isActive
-});
-
-const buildDefaultStoreConfigs = (): StoreConfig[] =>
-  [
-    ...BASE_STORES.map((name) => createStoreConfig(name, true, true)),
-    ...DEFAULT_INACTIVE_STORES.map((name) => createStoreConfig(name, false, false))
-  ];
-
-const sortStoreConfigs = (stores: StoreConfig[]): StoreConfig[] => {
-  const baseRank = new Map(BASE_STORES.map((name, idx) => [name, idx]));
-  return [...stores].sort((a, b) => {
-    if (a.isBase && b.isBase) {
-      return (baseRank.get(a.name) ?? 999) - (baseRank.get(b.name) ?? 999);
-    }
-    if (a.isBase !== b.isBase) return a.isBase ? -1 : 1;
-    return a.name.localeCompare(b.name);
-  });
-};
-
-const mergeStoreConfigs = (incomingStores: StoreName[], localStores: StoreConfig[]): StoreConfig[] => {
-  const map = new Map<string, StoreConfig>();
-  buildDefaultStoreConfigs().forEach((store) => map.set(store.name, store));
-  localStores.forEach((store) => map.set(store.name, { ...store }));
-  incomingStores.forEach((rawName) => {
-    const name = normalizeStoreName(rawName);
-    if (!name) return;
-    const current = map.get(name);
-    map.set(
-      name,
-      current ?? createStoreConfig(name, BASE_STORES.includes(name), BASE_STORES.includes(name))
-    );
-  });
-  return sortStoreConfigs(Array.from(map.values()));
-};
-
-const loadStoredStoreConfigs = (): StoreConfig[] => {
-  try {
-    const raw = localStorage.getItem(STORES_STORAGE_KEY);
-    if (!raw) return buildDefaultStoreConfigs();
-    const parsed = JSON.parse(raw) as StoreConfig[];
-    if (!Array.isArray(parsed)) return buildDefaultStoreConfigs();
-    const normalized = parsed
-      .map((entry) => {
-        const name = normalizeStoreName(String(entry?.name ?? ""));
-        if (!name) return null;
-        const isBase = BASE_STORES.includes(name);
-        return createStoreConfig(name, isBase, isBase ? true : Boolean(entry?.isActive));
-      })
-      .filter((entry): entry is StoreConfig => entry !== null);
-    return mergeStoreConfigs([], normalized);
-  } catch {
-    return buildDefaultStoreConfigs();
-  }
-};
 
 const newRonda = (storesActivos: StoreName[]): Ronda => ({
   id: makeId(),
@@ -122,120 +60,13 @@ const entryTimestamp = (entry: Partial<Entry> | null | undefined): number => {
   return Number.isFinite(t) ? t : 0;
 };
 
-// ── Priority helpers ─────────────────────────────────────────────
+// â”€â”€ Priority helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const hayClass = (hay: number): string =>
   hay > 5 ? "priority-red" : hay > 0 ? "priority-orange" : "";
 
-const hayPriority = (hay: number, mode: PriorityMode): number => {
-  if (mode === "orange-first") return hay > 0 && hay <= 5 ? 0 : hay > 5 ? 1 : 2;
-  return hay > 5 ? 0 : hay > 0 && hay <= 5 ? 1 : 2;
-};
-
-const matchesPriorityFilter = (hay: number, f: PriorityFilter): boolean => {
-  if (f === "all") return true;
-  if (f === "orange") return hay > 0 && hay <= 5;
-  if (f === "red") return hay > 5;
-  return hay === 0;
-};
-
-// ── Memoized ItemCard Component ──────────────────────────────────
-interface ItemCardProps {
-  item: Item;
-  entry?: Entry;
-  onUpdate: (item: Item, patch: Partial<Pick<Entry, "precioUnitario" | "cantidad">>) => void;
-  onToggleCart: (item: Item) => void;
-  onBumpQuantity: (item: Item, delta: number) => void;
-}
-
-const ItemCard = React.memo(({ item, entry, onUpdate, onToggleCart, onBumpQuantity }: ItemCardProps) => {
-  const [localPrecio, setLocalPrecio] = useState(entry?.precioUnitario !== undefined ? entry.precioUnitario.toString() : "");
-  const [localCantidad, setLocalCantidad] = useState(entry?.cantidad !== undefined ? entry.cantidad.toString() : "");
-  const hasEntry = entry && (entry.precioUnitario > 0 || entry.cantidad > 0);
-
-  // Sincronizar con el estado global solo si no tenemos el foco en el input
-  useEffect(() => {
-    const isFocused = document.activeElement?.getAttribute("data-item-id") === item.id;
-    if (!isFocused) {
-      setLocalPrecio(entry?.precioUnitario !== undefined ? entry.precioUnitario.toString() : "");
-      setLocalCantidad(entry?.cantidad !== undefined ? entry.cantidad.toString() : "");
-    }
-  }, [entry?.precioUnitario, entry?.cantidad, item.id]);
-
-  const handlePrecioChange = (val: string) => {
-    setLocalPrecio(val);
-    const num = parseDecimal(val);
-    onUpdate(item, { precioUnitario: num });
-  };
-
-  const handleCantidadChange = (val: string) => {
-    setLocalCantidad(val);
-    const num = Math.round(Number(val)) || 0;
-    onUpdate(item, { cantidad: num });
-  };
-
-  return (
-    <article className={`item-card ${hayClass(item.hay)} ${entry?.inCart ? "in-cart" : ""}`}>
-      <div className="item-row compact">
-        <span className="item-row-name">{item.nombre}</span>
-        <span className="item-row-stat">HAY <strong>{item.hay}</strong></span>
-        <span className="item-row-stat">SUG <strong>{item.sugerida}</strong></span>
-        <span className="item-row-cat">{CATEGORY_LABELS[item.categoria]}</span>
-      </div>
-      <div className="entry-inputs">
-        <label className="entry-label">
-          <span>Precio</span>
-          <input
-            type="text"
-            inputMode="decimal"
-            data-item-id={item.id}
-            value={localPrecio}
-            onChange={(e) => handlePrecioChange(e.target.value)}
-          />
-        </label>
-        <label className="entry-label">
-          <span>Cant.</span>
-          <div className="qty-row">
-            <button type="button" onClick={() => onBumpQuantity(item, -1)}>−</button>
-            <input
-              type="number"
-              inputMode="numeric"
-              data-item-id={item.id}
-              min="0"
-              step="1"
-              value={localCantidad}
-              onChange={(e) => handleCantidadChange(e.target.value)}
-            />
-            <button type="button" onClick={() => onBumpQuantity(item, 1)}>+</button>
-          </div>
-        </label>
-        <div className="entry-subtotal">
-          ${(entry?.subtotal ?? 0).toFixed(2)}
-        </div>
-        {hasEntry && (
-          <button
-            type="button"
-            className={`cart-btn ${entry?.inCart ? "cart-active" : ""}`}
-            onClick={() => onToggleCart(item)}
-            title={entry?.inCart ? "Quitar del carrito" : "Agregar al carrito"}
-          >
-            🛒
-          </button>
-        )}
-      </div>
-    </article>
-  );
-});
-
+// â”€â”€ Memoized ItemCard Component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export default function App() {
-  const [storeConfigs, setStoreConfigs] = useState<StoreConfig[]>(() => loadStoredStoreConfigs());
-  const activeStores = useMemo(
-    () => sortStoreConfigs(storeConfigs.filter((store) => store.isActive)).map((store) => store.name),
-    [storeConfigs]
-  );
-  const inactiveStores = useMemo(
-    () => sortStoreConfigs(storeConfigs.filter((store) => !store.isActive)).map((store) => store.name),
-    [storeConfigs]
-  );
+  const { storeConfigs, setStoreConfigs, activeStores, inactiveStores, storesStorageKey } = useStoreConfigs();
   const [view, setView] = useState<View>(DEFAULT_VIEW);
   const [items, setItems] = useState<Item[]>([]);
   const [currentRonda, setCurrentRonda] = useState<Ronda>(() => newRonda(activeStores));
@@ -253,7 +84,7 @@ export default function App() {
   const [categoryFilter, setCategoryFilter] = useState<CategoryId | "all">("all");
   const [priorityMode, setPriorityMode] = useState<PriorityMode>("orange-first");
   const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>("all");
-  // entryMap is intentionally NOT persisted across sessions — reset on load
+  // entryMap is intentionally NOT persisted across sessions â€” reset on load
   const [entryMap, setEntryMap] = useState<Record<string, Entry>>({});
   const [totals, setTotals] = useState<StoreTotal[]>(() => initialTotals(activeStores));
   const [status, setStatus] = useState("Cargando...");
@@ -268,8 +99,8 @@ export default function App() {
   const idleTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
-    localStorage.setItem(STORES_STORAGE_KEY, JSON.stringify(storeConfigs));
-  }, [storeConfigs]);
+    localStorage.setItem(storesStorageKey, JSON.stringify(storeConfigs));
+  }, [storeConfigs, storesStorageKey]);
 
   useEffect(() => {
     if (activeStores.length === 0) {
@@ -310,7 +141,7 @@ export default function App() {
         setSignedIn(false);
         setItems([]);
         setEntryMap({});
-        setStatus("Iniciá sesión para comenzar.");
+        setStatus("IniciÃ¡ sesiÃ³n para comenzar.");
       }
     });
     return () => unsubscribe();
@@ -331,7 +162,7 @@ export default function App() {
   useEffect(() => {
     if (!signedIn) return;
     void bootstrap();
-    // NOTE: intentionally NOT calling loadDraftEntries() — entries reset each session
+    // NOTE: intentionally NOT calling loadDraftEntries() â€” entries reset each session
     const onOnline = () => {
       setStatus("Conectado: sincronizando cola pendiente...");
       void flushSyncQueue();
@@ -347,8 +178,8 @@ export default function App() {
     const resetTimer = () => {
       if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
       idleTimerRef.current = setTimeout(async () => {
-        setStatus("Inactividad detectada. Guardando y cerrando sesión...");
-        // Guardamos automáticamente antes de salir
+        setStatus("Inactividad detectada. Guardando y cerrando sesiÃ³n...");
+        // Guardamos automÃ¡ticamente antes de salir
         const entriesToSave = Object.values(entryMap).filter((e) => e.inCart || e.precioUnitario > 0 || e.cantidad > 0);
         if (entriesToSave.length > 0) {
           try {
@@ -373,7 +204,7 @@ export default function App() {
     };
   }, [signedIn, entryMap, currentRonda.fecha]);
 
-  // Cargar datos históricos de Google Sheets cuando cambia la fecha
+  // Cargar datos histÃ³ricos de Google Sheets cuando cambia la fecha
   useEffect(() => {
     if (!signedIn || !currentRonda.fecha) return;
     
@@ -391,8 +222,8 @@ export default function App() {
             const next = { ...prev };
             sheetEntries.forEach((se: any) => {
               const key = entryKey(se.supermercado, se.itemId);
-              // Solo cargamos el dato de Sheets si no tenemos ya algo editándose "en vivo" 
-              // (lo de Firebase tiene prioridad según lo pedido)
+              // Solo cargamos el dato de Sheets si no tenemos ya algo editÃ¡ndose "en vivo" 
+              // (lo de Firebase tiene prioridad segÃºn lo pedido)
               if (!next[key]) {
                 next[key] = {
                   ...se,
@@ -409,9 +240,9 @@ export default function App() {
             });
             return next;
           });
-          setStatus(`Se sincronizaron ${sheetEntries.length} artículos del historial.`);
+          setStatus(`Se sincronizaron ${sheetEntries.length} artÃ­culos del historial.`);
         } else {
-          setStatus(`No hay registros en Sheets para ${targetDate}. Sesión colaborativa activa.`);
+          setStatus(`No hay registros en Sheets para ${targetDate}. SesiÃ³n colaborativa activa.`);
         }
       } catch (err) {
         setAllowFirestoreLiveForDate(false);
@@ -421,14 +252,14 @@ export default function App() {
     }
 
     // Al cambiar la fecha, primero limpiamos para que no se vea data vieja 
-    // pero el listener de Firebase (en el otro useEffect) traerá lo nuevo
+    // pero el listener de Firebase (en el otro useEffect) traerÃ¡ lo nuevo
     setAllowFirestoreLiveForDate(false);
     setLiveSessionId(null);
     setEntryMap({}); 
     void loadHistory();
   }, [signedIn, currentRonda.fecha]);
 
-  // Limpieza de duplicados históricos del día para evitar que reaparezcan valores viejos.
+  // Limpieza de duplicados histÃ³ricos del dÃ­a para evitar que reaparezcan valores viejos.
   useEffect(() => {
     if (!signedIn || !currentRonda.fecha || !liveSessionId) return;
     void cleanupDuplicateEntriesForDate(currentRonda.fecha, liveSessionId).catch((err) => {
@@ -451,9 +282,9 @@ export default function App() {
           const local = prev[key];
           const localTs = entryTimestamp(local);
           const remoteTs = entryTimestamp(le);
-          // No sobrescribir edición local más nueva con datos remotos viejos.
+          // No sobrescribir ediciÃ³n local mÃ¡s nueva con datos remotos viejos.
           if (local && localTs > 0 && remoteTs > 0 && localTs >= remoteTs) return;
-          // Omitir actualización si el valor local es idéntico al de la nube
+          // Omitir actualizaciÃ³n si el valor local es idÃ©ntico al de la nube
           if (JSON.stringify(local) !== JSON.stringify(le)) {
             next[key] = le;
             changed = true;
@@ -483,27 +314,20 @@ export default function App() {
     setSignedIn(false);
     setItems([]);
     setEntryMap({});
-    setStatus("Sesión cerrada.");
+    setStatus("SesiÃ³n cerrada.");
   }
 
   useEffect(() => {
     recalcTotals(entryMap);
   }, [entryMap, activeStores]);
 
-  const filteredItems = useMemo(() => {
-    let list = items;
-    // Filtrado por categoría (si es 'all' muestra todos)
-    if (categoryFilter !== "all") {
-      list = list.filter((i) => i.categoria === categoryFilter);
-    }
-    
-    if (search.trim()) {
-      const q = search.toLowerCase().trim();
-      list = list.filter((i) => i.nombre.toLowerCase().includes(q));
-    }
-    list = list.filter((i) => matchesPriorityFilter(i.hay, priorityFilter));
-    return [...list].sort((a, b) => hayPriority(a.hay, priorityMode) - hayPriority(b.hay, priorityMode));
-  }, [items, search, categoryFilter, priorityFilter, priorityMode]);
+  const filteredItems = useItemFilters({
+    items,
+    search,
+    categoryFilter,
+    priorityFilter,
+    priorityMode
+  });
 
   const editingItem = useMemo(
     () => items.find((item) => item.id === editingItemId),
@@ -521,26 +345,26 @@ export default function App() {
     try {
       const data = await fetchBootstrap();
       if (!data.items || data.items.length === 0) {
-        throw new Error("El catálogo de Google Sheets está vacío o no se pudo leer.");
+        throw new Error("El catÃ¡logo de Google Sheets estÃ¡ vacÃ­o o no se pudo leer.");
       }
       setItems(data.items);
       setStoreConfigs((prev) => mergeStoreConfigs(data.stores ?? [], prev));
       await db.itemsCache.put({ key: "catalog", items: data.items, savedAt: nowIso() });
       
       if (data.source === "sheets") {
-         setStatus("Catálogo cargado exitosamente desde Google Sheets.");
+         setStatus("CatÃ¡logo cargado exitosamente desde Google Sheets.");
       } else {
-         setStatus("⚠️ FALLÓ GOOGLE SHEETS: Cargando respaldo de datos viejos desde Firestore.");
+         setStatus("âš ï¸ FALLÃ“ GOOGLE SHEETS: Cargando respaldo de datos viejos desde Firestore.");
       }
     } catch (error) {
       console.error("Fallo total de carga:", error);
       const cached = await db.itemsCache.get("catalog");
       if (cached && cached.items.length > 0) {
         setItems(cached.items);
-        setStatus(`Sin conexión a Google Sheets. Usando copia local (${cached.savedAt.slice(0,10)}).`);
+        setStatus(`Sin conexiÃ³n a Google Sheets. Usando copia local (${cached.savedAt.slice(0,10)}).`);
       } else {
         setItems([]);
-        setStatus(`⚠️ ERROR DE CONEXIÓN: ${String(error)}. Verificá que el enlace de Google Sheets sea correcto y público.`);
+        setStatus(`âš ï¸ ERROR DE CONEXIÃ“N: ${String(error)}. VerificÃ¡ que el enlace de Google Sheets sea correcto y pÃºblico.`);
       }
     }
   }
@@ -552,7 +376,7 @@ export default function App() {
     setSelectedStore(storeName);
     setStoreMenuOpen(false);
     setShowAddStoreInput(false);
-    setStatus(`${storeName} ahora está activo.`);
+    setStatus(`${storeName} ahora estÃ¡ activo.`);
   }
 
   function disableStore(storeName: StoreName) {
@@ -572,12 +396,12 @@ export default function App() {
   function addStore() {
     const normalized = normalizeStoreName(newStoreName);
     if (!normalized) {
-      setStatus("IngresÃ¡ un nombre de supermercado.");
+      setStatus("IngresÃƒÂ¡ un nombre de supermercado.");
       return;
     }
     const existing = storeConfigs.find((store) => store.name === normalized);
     if (existing) {
-      setStatus(existing.isActive ? `${normalized} ya existe y estÃ¡ activo.` : `${normalized} ya existe y estÃ¡ inactivo.`);
+      setStatus(existing.isActive ? `${normalized} ya existe y estÃƒÂ¡ activo.` : `${normalized} ya existe y estÃƒÂ¡ inactivo.`);
       setShowAddStoreInput(false);
       setNewStoreName("");
       return;
@@ -585,7 +409,7 @@ export default function App() {
     setStoreConfigs((prev) => sortStoreConfigs([...prev, createStoreConfig(normalized, false, false)]));
     setShowAddStoreInput(false);
     setNewStoreName("");
-    setStatus(`${normalized} agregado. PodÃ©s activarlo desde el menÃº +.`);
+    setStatus(`${normalized} agregado. PodÃƒÂ©s activarlo desde el menÃƒÂº +.`);
   }
 
   function resetProductForm() {
@@ -598,12 +422,12 @@ export default function App() {
   async function handleCreateProduct() {
     const nombre = productName.trim();
     if (!nombre) {
-      setStatus("IngresÃ¡ el nombre del producto.");
+      setStatus("IngresÃƒÂ¡ el nombre del producto.");
       return;
     }
     const exists = items.some((item) => normalizeProductName(item.nombre) === normalizeProductName(nombre));
     if (exists) {
-      setStatus("Ese producto ya existe en el catÃ¡logo.");
+      setStatus("Ese producto ya existe en el catÃƒÂ¡logo.");
       return;
     }
     try {
@@ -652,7 +476,7 @@ export default function App() {
       setStatus("Selecciona un producto para eliminar.");
       return;
     }
-    const confirmed = window.confirm(`¿Eliminar ${editingItem.nombre}?`);
+    const confirmed = window.confirm(`Â¿Eliminar ${editingItem.nombre}?`);
     if (!confirmed) return;
     try {
       await deleteCatalogItem({ itemId: editingItem.id });
@@ -696,7 +520,7 @@ export default function App() {
     }, 500);
 
     if (entry.precioUnitario < 0 || entry.cantidad < 0) {
-      setStatus("Ítem cargado con advertencia: precio >= 0 y cantidad > 0 requeridos.");
+      setStatus("Ãtem cargado con advertencia: precio >= 0 y cantidad > 0 requeridos.");
     }
   }
 
@@ -742,23 +566,23 @@ export default function App() {
 
   async function saveCurrentRound() {
     if (!currentRonda.fecha) {
-      setStatus("⚠️ La fecha es obligatoria. Seleccioná una fecha antes de guardar la ronda.");
+      setStatus("âš ï¸ La fecha es obligatoria. SeleccionÃ¡ una fecha antes de guardar la ronda.");
       return;
     }
     const activeStoreSet = new Set(activeStores.map((s) => normalizeStoreName(String(s))));
-    // Guardar los que están en el carrito o tienen algún dato cargado (para comparar)
+    // Guardar los que estÃ¡n en el carrito o tienen algÃºn dato cargado (para comparar)
     const entriesToSave = Object.values(entryMap).filter((e) => {
       const hasData = e.inCart || e.precioUnitario > 0 || e.cantidad > 0;
       if (!hasData) return false;
       return activeStoreSet.has(normalizeStoreName(String(e.supermercado)));
     });
     if (entriesToSave.length === 0) {
-      setStatus("No hay artículos cargados o en carrito para guardar.");
+      setStatus("No hay artÃ­culos cargados o en carrito para guardar.");
       return;
     }
     const invalid = entriesToSave.find((e) => e.precioUnitario < 0 || (e.inCart && e.cantidad <= 0));
     if (invalid) {
-      setStatus("Hay ítems inválidos: verificá precio y cantidad.");
+      setStatus("Hay Ã­tems invÃ¡lidos: verificÃ¡ precio y cantidad.");
       return;
     }
     const entriesWithFecha = entriesToSave.map((e) => ({
@@ -776,11 +600,11 @@ export default function App() {
     }
     try {
       await sendEntriesBatch(entriesWithFecha, allStoreNames);
-      setStatus("✅ Ronda sincronizada con Google Sheets.");
+      setStatus("âœ… Ronda sincronizada con Google Sheets.");
     } catch (error) {
       const job: SyncJob = { id: makeId(), payload: entriesWithFecha, stores: allStoreNames, attempts: 1, createdAt: nowIso() };
       await db.syncQueue.put(job);
-      setStatus(`❌ Error al guardar: ${String(error)}`);
+      setStatus(`âŒ Error al guardar: ${String(error)}`);
     }
   }
 
@@ -817,29 +641,8 @@ export default function App() {
     }
   }
 
-  // ── Login screen ─────────────────────────────────────────────
   if (!signedIn) {
-    return (
-      <div className="login-screen">
-        <div className="login-card">
-          <div className="login-logo">🛒</div>
-          <h1>AppCompras v2</h1>
-          <p>Carga rápida de precios y cantidades</p>
-          <button
-            id="btn-google-signin"
-            type="button"
-            className="google-btn"
-            onClick={() => void handleSignIn()}
-            disabled={authLoading}
-          >
-            {authLoading ? "Conectando..." : "Iniciar sesión con Google"}
-          </button>
-          {status !== "Iniciá sesión para cargar datos." && (
-            <p className="status-inline">{status}</p>
-          )}
-        </div>
-      </div>
-    );
+    return <LoginScreen authLoading={authLoading} status={status} onSignIn={() => void handleSignIn()} />;
   }
 
 
@@ -849,34 +652,20 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      {/* ── Header ── */}
-      <header className="top-header">
-        <div className="header-title">
-          <span>🛒</span>
-          <h1>AppCompras</h1>
-        </div>
-        <div className="header-right">
-          <div className={`badge ${isOnline ? "online" : "offline"}`}>
-            <span className="status-dot" />
-            {isOnline ? "Online" : "Sin red"}
-          </div>
+      <AppHeader isOnline={isOnline} onSignOut={handleSignOut} />
 
-          <button id="btn-signout" type="button" className="badge signout-btn" onClick={handleSignOut}>Salir</button>
-        </div>
-      </header>
-
-      {/* ── Store totals bar (only cart items count) ── */}
+      {/* â”€â”€ Store totals bar (only cart items count) â”€â”€ */}
       <div className="store-totals-bar">
         {totals.map((t) => (
           <div key={t.supermercado} className="store-total-chip">
             <span className="store-total-name">{t.supermercado}</span>
             <span className="store-total-amount">${t.total.toFixed(0)}</span>
-            <span className="store-total-items">{t.itemsCount} 🛒</span>
+            <span className="store-total-items">{t.itemsCount} ðŸ›’</span>
           </div>
         ))}
       </div>
 
-      {/* ── Tabs ── */}
+      {/* â”€â”€ Tabs â”€â”€ */}
       <nav className="tabs">
         {(["lista", "carga", "comparacion"] as View[]).map((id) => (
           <button key={id} className={view === id ? "tab active" : "tab"} onClick={() => setView(id)} type="button">
@@ -885,7 +674,7 @@ export default function App() {
         ))}
       </nav>
 
-      {/* ── Filters bar ── */}
+      {/* â”€â”€ Filters bar â”€â”€ */}
       <section className="filters-bar">
         <select
           value={String(categoryFilter)}
@@ -896,7 +685,7 @@ export default function App() {
         >
           <option value="all">Todo</option>
           {Array.from(new Set(items.map(i => i.categoria))).sort((a,b)=>a-b).map(cid => (
-             <option key={cid} value={cid}>{CATEGORY_LABELS[cid] || `Categoría ${cid}`}</option>
+             <option key={cid} value={cid}>{CATEGORY_LABELS[cid] || `CategorÃ­a ${cid}`}</option>
           ))}
         </select>
         <div className="priority-controls">
@@ -907,7 +696,7 @@ export default function App() {
               onClick={() => { setSearchOpen(true); setTimeout(() => searchInputRef.current?.focus(), 50); }}
               aria-label="Buscar"
             >
-              🔍
+              ðŸ”
             </button>
             <input
               ref={searchInputRef}
@@ -918,7 +707,7 @@ export default function App() {
               onBlur={() => { if (!search) setSearchOpen(false); }}
             />
             {search && (
-              <button type="button" className="search-clear" onClick={() => { setSearch(""); setSearchOpen(false); }}>✕</button>
+              <button type="button" className="search-clear" onClick={() => { setSearch(""); setSearchOpen(false); }}>âœ•</button>
             )}
           </div>
           <select
@@ -926,23 +715,23 @@ export default function App() {
             onChange={(e) => setPriorityFilter(e.target.value as PriorityFilter)}
             title="Filtrar por criticidad"
           >
-            <option value="all">🔘 Todos</option>
-            <option value="orange">🟡 Naranja</option>
-            <option value="red">🔴 Rojo</option>
-            <option value="none">⚪ Sin color</option>
+            <option value="all">ðŸ”˜ Todos</option>
+            <option value="orange">ðŸŸ¡ Naranja</option>
+            <option value="red">ðŸ”´ Rojo</option>
+            <option value="none">âšª Sin color</option>
           </select>
           <select
             value={priorityMode}
             onChange={(e) => setPriorityMode(e.target.value as PriorityMode)}
             title="Orden de criticidad"
           >
-            <option value="orange-first">Asc: 🟡 Naranja, 🔴 Rojo</option>
-            <option value="red-first">Desc: 🔴 Rojo, 🟡 Naranja</option>
+            <option value="orange-first">Asc: ðŸŸ¡ Naranja, ðŸ”´ Rojo</option>
+            <option value="red-first">Desc: ðŸ”´ Rojo, ðŸŸ¡ Naranja</option>
           </select>
         </div>
       </section>
  
-      {/* ── Lista ── */}
+      {/* â”€â”€ Lista â”€â”€ */}
       {view === "lista" && (
         <section className="panel">
           {filteredItems.map((item) => (
@@ -954,12 +743,12 @@ export default function App() {
             </article>
           ))}
           {filteredItems.length === 0 && (
-            <p className="empty-msg">No hay artículos que coincidan con los filtros.</p>
+            <p className="empty-msg">No hay artÃ­culos que coincidan con los filtros.</p>
           )}
         </section>
       )}
 
-      {/* ── Carga ── */}
+      {/* â”€â”€ Carga â”€â”€ */}
       {view === "carga" && (
         <section className="panel carga-panel">
           <div className="carga-sticky-header">
@@ -985,7 +774,7 @@ export default function App() {
                   }}
                   title="Gestionar supermercados"
                 >
-                  Super {storeMenuOpen ? "▾" : "▸"}
+                  Super {storeMenuOpen ? "â–¾" : "â–¸"}
                 </button>
                 {storeMenuOpen && (
                   <div className="store-menu">
@@ -1068,7 +857,7 @@ export default function App() {
                   if (!productMenuOpen) resetProductForm();
                 }}
               >
-                Productos {productMenuOpen ? "▾" : "▸"}
+                Productos {productMenuOpen ? "â–¾" : "â–¸"}
               </button>
               <button className="primary" id="btn-save" type="button" onClick={() => void saveCurrentRound()}>
                 Guardar ronda
@@ -1098,7 +887,7 @@ export default function App() {
                     >
                       <option value="">Nuevo producto...</option>
                       {items.map((item) => (
-                        <option key={item.id} value={item.id}>{item.nombre} — HAY: {item.hay}</option>
+                        <option key={item.id} value={item.id}>{item.nombre} â€” HAY: {item.hay}</option>
                       ))}
                     </select>
                   </label>
@@ -1114,7 +903,7 @@ export default function App() {
                     />
                   </label>
                   <label className="fecha-label">
-                    CategorÃ­a
+                    CategorÃƒÂ­a
                     <select
                       value={String(productCategory)}
                       onChange={(e) => setProductCategory(Number(e.target.value) || 1)}
@@ -1172,13 +961,13 @@ export default function App() {
               />
             ))}
             {filteredItems.length === 0 && (
-              <p className="empty-msg">No hay artículos que coincidan con los filtros.</p>
+              <p className="empty-msg">No hay artÃ­culos que coincidan con los filtros.</p>
             )}
           </div>
         </section>
       )}
 
-      {/* ── Comparación ── */}
+      {/* â”€â”€ ComparaciÃ³n â”€â”€ */}
       {view === "comparacion" && (
         <section className="panel">
           <div className="compare-header">
@@ -1214,9 +1003,9 @@ export default function App() {
                       {p && p.subtotal > 0 ? (
                         <>
                           <span>${p.subtotal.toFixed(2)}</span>
-                          {p.inCart && <span className="cart-icon-sm">🛒</span>}
+                          {p.inCart && <span className="cart-icon-sm">ðŸ›’</span>}
                         </>
-                      ) : "—"}
+                      ) : "â€”"}
                     </div>
                   ))}
                 </div>
@@ -1229,13 +1018,16 @@ export default function App() {
         </section>
       )}
 
-      {/* ── Toast ── */}
+      {/* â”€â”€ Toast â”€â”€ */}
       {status && (
         <div className="toast-notification" role="alert">
           <span>{status}</span>
-          <button type="button" className="toast-close" onClick={() => setStatus("")} aria-label="Cerrar">✕</button>
+          <button type="button" className="toast-close" onClick={() => setStatus("")} aria-label="Cerrar">âœ•</button>
         </div>
       )}
     </div>
   );
 }
+
+
+

@@ -1,21 +1,21 @@
 /* ── Design tokens ─────────────────────────────────────────────── */
 :root {
-  --bg: #f1f5f9;
-  --surface: #ffffff;
-  --ink: #0f172a;
-  --soft: #64748b;
-  --brand: #14532d;
-  --brand-light: #22c55e;
+  --bg: var(--color-bg-canvas);
+  --surface: var(--color-bg-surface);
+  --ink: var(--color-text-primary);
+  --soft: var(--color-text-muted);
+  --brand: var(--color-primary);
+  --brand-light: #2f9e62;
   --brand-soft: #dcfce7;
-  --line: #e2e8f0;
-  --radius: 12px;
-  --shadow: 0 2px 10px rgba(0,0,0,0.07);
+  --line: var(--color-border-subtle);
+  --radius: var(--radius-lg);
+  --shadow: var(--shadow-sm);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {
-  font-family: "Segoe UI", system-ui, sans-serif;
+  font-family: var(--font-family-base);
   background: var(--bg);
   color: var(--ink);
   font-size: 14px;
