@@ -7,10 +7,10 @@ interface AppHeaderProps {
 
 export function AppHeader({ isOnline, onSignOut }: AppHeaderProps) {
   return (
-    <header className="top-header">
-      <div className="header-title">
+    <header className="top-header mx-auto w-full max-w-[860px]">
+      <div className="header-title flex items-center gap-2">
         <span>🛒</span>
-        <h1>AppCompras</h1>
+        <h1 className="font-display">AppCompras</h1>
       </div>
       <div className="header-right">
         <div className={`badge ${isOnline ? "online" : "offline"}`}>

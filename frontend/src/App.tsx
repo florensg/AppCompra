@@ -32,6 +32,17 @@ type View = "lista" | "carga" | "comparacion";
 const DEFAULT_VIEW: View = "carga";
 const normalizeProductName = (name: string): string =>
   name.trim().replace(/\s+/g, " ").toLowerCase();
+const normalizeUiText = (value: string): string =>
+  value
+    .replace(/â€“|â€”/g, "-")
+    .replace(/Ã¡/g, "a")
+    .replace(/Ã©/g, "e")
+    .replace(/Ã­/g, "i")
+    .replace(/Ã³/g, "o")
+    .replace(/Ãº/g, "u")
+    .replace(/Ã±/g, "n")
+    .replace(/Ã/g, "")
+    .replace(/Â/g, "");
 
 const newRonda = (storesActivos: StoreName[]): Ronda => ({
   id: makeId(),
@@ -141,7 +152,7 @@ export default function App() {
         setSignedIn(false);
         setItems([]);
         setEntryMap({});
-        setStatus("IniciÃ¡ sesiÃ³n para comenzar.");
+        setStatus("Inicia sesion para comenzar.");
       }
     });
     return () => unsubscribe();
@@ -178,7 +189,7 @@ export default function App() {
     const resetTimer = () => {
       if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
       idleTimerRef.current = setTimeout(async () => {
-        setStatus("Inactividad detectada. Guardando y cerrando sesiÃ³n...");
+        setStatus("Inactividad detectada. Guardando y cerrando sesion...");
         // Guardamos automÃ¡ticamente antes de salir
         const entriesToSave = Object.values(entryMap).filter((e) => e.inCart || e.precioUnitario > 0 || e.cantidad > 0);
         if (entriesToSave.length > 0) {
@@ -240,9 +251,9 @@ export default function App() {
             });
             return next;
           });
-          setStatus(`Se sincronizaron ${sheetEntries.length} artÃ­culos del historial.`);
+          setStatus(`Se sincronizaron ${sheetEntries.length} articulos del historial.`);
         } else {
-          setStatus(`No hay registros en Sheets para ${targetDate}. SesiÃ³n colaborativa activa.`);
+          setStatus(`No hay registros en Sheets para ${targetDate}. Sesion colaborativa activa.`);
         }
       } catch (err) {
         setAllowFirestoreLiveForDate(false);
@@ -314,7 +325,7 @@ export default function App() {
     setSignedIn(false);
     setItems([]);
     setEntryMap({});
-    setStatus("SesiÃ³n cerrada.");
+    setStatus("Sesion cerrada.");
   }
 
   useEffect(() => {
@@ -345,26 +356,26 @@ export default function App() {
     try {
       const data = await fetchBootstrap();
       if (!data.items || data.items.length === 0) {
-        throw new Error("El catÃ¡logo de Google Sheets estÃ¡ vacÃ­o o no se pudo leer.");
+        throw new Error("El catalogo de Google Sheets esta vacio o no se pudo leer.");
       }
       setItems(data.items);
       setStoreConfigs((prev) => mergeStoreConfigs(data.stores ?? [], prev));
       await db.itemsCache.put({ key: "catalog", items: data.items, savedAt: nowIso() });
       
       if (data.source === "sheets") {
-         setStatus("CatÃ¡logo cargado exitosamente desde Google Sheets.");
+         setStatus("Catalogo cargado exitosamente desde Google Sheets.");
       } else {
-         setStatus("âš ï¸ FALLÃ“ GOOGLE SHEETS: Cargando respaldo de datos viejos desde Firestore.");
+         setStatus("ALERTA: FALLO GOOGLE SHEETS. Cargando respaldo desde Firestore.");
       }
     } catch (error) {
       console.error("Fallo total de carga:", error);
       const cached = await db.itemsCache.get("catalog");
       if (cached && cached.items.length > 0) {
         setItems(cached.items);
-        setStatus(`Sin conexiÃ³n a Google Sheets. Usando copia local (${cached.savedAt.slice(0,10)}).`);
+        setStatus(`Sin conexion a Google Sheets. Usando copia local (${cached.savedAt.slice(0,10)}).`);
       } else {
         setItems([]);
-        setStatus(`âš ï¸ ERROR DE CONEXIÃ“N: ${String(error)}. VerificÃ¡ que el enlace de Google Sheets sea correcto y pÃºblico.`);
+        setStatus(`ALERTA: ERROR DE CONEXION: ${String(error)}. Verifica que el enlace de Google Sheets sea correcto y publico.`);
       }
     }
   }
@@ -376,7 +387,7 @@ export default function App() {
     setSelectedStore(storeName);
     setStoreMenuOpen(false);
     setShowAddStoreInput(false);
-    setStatus(`${storeName} ahora estÃ¡ activo.`);
+    setStatus(`${storeName} ahora esta activo.`);
   }
 
   function disableStore(storeName: StoreName) {
@@ -396,12 +407,12 @@ export default function App() {
   function addStore() {
     const normalized = normalizeStoreName(newStoreName);
     if (!normalized) {
-      setStatus("IngresÃƒÂ¡ un nombre de supermercado.");
+      setStatus("Ingresa un nombre de supermercado.");
       return;
     }
     const existing = storeConfigs.find((store) => store.name === normalized);
     if (existing) {
-      setStatus(existing.isActive ? `${normalized} ya existe y estÃƒÂ¡ activo.` : `${normalized} ya existe y estÃƒÂ¡ inactivo.`);
+      setStatus(existing.isActive ? `${normalized} ya existe y esta activo.` : `${normalized} ya existe y esta inactivo.`);
       setShowAddStoreInput(false);
       setNewStoreName("");
       return;
@@ -409,7 +420,7 @@ export default function App() {
     setStoreConfigs((prev) => sortStoreConfigs([...prev, createStoreConfig(normalized, false, false)]));
     setShowAddStoreInput(false);
     setNewStoreName("");
-    setStatus(`${normalized} agregado. PodÃƒÂ©s activarlo desde el menÃƒÂº +.`);
+    setStatus(`${normalized} agregado. Podes activarlo desde el menu +.`);
   }
 
   function resetProductForm() {
@@ -422,12 +433,12 @@ export default function App() {
   async function handleCreateProduct() {
     const nombre = productName.trim();
     if (!nombre) {
-      setStatus("IngresÃƒÂ¡ el nombre del producto.");
+      setStatus("Ingresa el nombre del producto.");
       return;
     }
     const exists = items.some((item) => normalizeProductName(item.nombre) === normalizeProductName(nombre));
     if (exists) {
-      setStatus("Ese producto ya existe en el catÃƒÂ¡logo.");
+      setStatus("Ese producto ya existe en el catalogo.");
       return;
     }
     try {
@@ -476,7 +487,7 @@ export default function App() {
       setStatus("Selecciona un producto para eliminar.");
       return;
     }
-    const confirmed = window.confirm(`Â¿Eliminar ${editingItem.nombre}?`);
+    const confirmed = window.confirm(`Eliminar ${editingItem.nombre}?`);
     if (!confirmed) return;
     try {
       await deleteCatalogItem({ itemId: editingItem.id });
@@ -520,7 +531,7 @@ export default function App() {
     }, 500);
 
     if (entry.precioUnitario < 0 || entry.cantidad < 0) {
-      setStatus("Ãtem cargado con advertencia: precio >= 0 y cantidad > 0 requeridos.");
+      setStatus("Item cargado con advertencia: precio >= 0 y cantidad > 0 requeridos.");
     }
   }
 
@@ -566,7 +577,7 @@ export default function App() {
 
   async function saveCurrentRound() {
     if (!currentRonda.fecha) {
-      setStatus("âš ï¸ La fecha es obligatoria. SeleccionÃ¡ una fecha antes de guardar la ronda.");
+      setStatus("ALERTA: la fecha es obligatoria. Selecciona una fecha antes de guardar la ronda.");
       return;
     }
     const activeStoreSet = new Set(activeStores.map((s) => normalizeStoreName(String(s))));
@@ -577,12 +588,12 @@ export default function App() {
       return activeStoreSet.has(normalizeStoreName(String(e.supermercado)));
     });
     if (entriesToSave.length === 0) {
-      setStatus("No hay artÃ­culos cargados o en carrito para guardar.");
+      setStatus("No hay articulos cargados o en carrito para guardar.");
       return;
     }
     const invalid = entriesToSave.find((e) => e.precioUnitario < 0 || (e.inCart && e.cantidad <= 0));
     if (invalid) {
-      setStatus("Hay Ã­tems invÃ¡lidos: verificÃ¡ precio y cantidad.");
+      setStatus("Hay items invalidos: verifica precio y cantidad.");
       return;
     }
     const entriesWithFecha = entriesToSave.map((e) => ({
@@ -600,11 +611,11 @@ export default function App() {
     }
     try {
       await sendEntriesBatch(entriesWithFecha, allStoreNames);
-      setStatus("âœ… Ronda sincronizada con Google Sheets.");
+      setStatus("Ronda sincronizada con Google Sheets.");
     } catch (error) {
       const job: SyncJob = { id: makeId(), payload: entriesWithFecha, stores: allStoreNames, attempts: 1, createdAt: nowIso() };
       await db.syncQueue.put(job);
-      setStatus(`âŒ Error al guardar: ${String(error)}`);
+      setStatus(`Error al guardar: ${String(error)}`);
     }
   }
 
@@ -660,7 +671,7 @@ export default function App() {
           <div key={t.supermercado} className="store-total-chip">
             <span className="store-total-name">{t.supermercado}</span>
             <span className="store-total-amount">${t.total.toFixed(0)}</span>
-            <span className="store-total-items">{t.itemsCount} ðŸ›’</span>
+            <span className="store-total-items">{t.itemsCount} items</span>
           </div>
         ))}
       </div>
@@ -677,6 +688,7 @@ export default function App() {
       {/* â”€â”€ Filters bar â”€â”€ */}
       <section className="filters-bar">
         <select
+          className="h-10 rounded-lg border border-border-subtle bg-white px-3 text-sm text-text-primary outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
           value={String(categoryFilter)}
           onChange={(e) => {
             const v = e.target.value;
@@ -685,7 +697,7 @@ export default function App() {
         >
           <option value="all">Todo</option>
           {Array.from(new Set(items.map(i => i.categoria))).sort((a,b)=>a-b).map(cid => (
-             <option key={cid} value={cid}>{CATEGORY_LABELS[cid] || `CategorÃ­a ${cid}`}</option>
+             <option key={cid} value={cid}>{CATEGORY_LABELS[cid] || `Categoria ${cid}`}</option>
           ))}
         </select>
         <div className="priority-controls">
@@ -696,7 +708,7 @@ export default function App() {
               onClick={() => { setSearchOpen(true); setTimeout(() => searchInputRef.current?.focus(), 50); }}
               aria-label="Buscar"
             >
-              ðŸ”
+              Buscar
             </button>
             <input
               ref={searchInputRef}
@@ -707,26 +719,28 @@ export default function App() {
               onBlur={() => { if (!search) setSearchOpen(false); }}
             />
             {search && (
-              <button type="button" className="search-clear" onClick={() => { setSearch(""); setSearchOpen(false); }}>âœ•</button>
+              <button type="button" className="search-clear" onClick={() => { setSearch(""); setSearchOpen(false); }}>x</button>
             )}
           </div>
           <select
+            className="h-10 rounded-lg border border-border-subtle bg-white px-3 text-sm text-text-primary outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
             value={priorityFilter}
             onChange={(e) => setPriorityFilter(e.target.value as PriorityFilter)}
             title="Filtrar por criticidad"
           >
-            <option value="all">ðŸ”˜ Todos</option>
-            <option value="orange">ðŸŸ¡ Naranja</option>
-            <option value="red">ðŸ”´ Rojo</option>
-            <option value="none">âšª Sin color</option>
+            <option value="all">Todos</option>
+            <option value="orange">Naranja</option>
+            <option value="red">Rojo</option>
+            <option value="none">Sin color</option>
           </select>
           <select
+            className="h-10 rounded-lg border border-border-subtle bg-white px-3 text-sm text-text-primary outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
             value={priorityMode}
             onChange={(e) => setPriorityMode(e.target.value as PriorityMode)}
             title="Orden de criticidad"
           >
-            <option value="orange-first">Asc: ðŸŸ¡ Naranja, ðŸ”´ Rojo</option>
-            <option value="red-first">Desc: ðŸ”´ Rojo, ðŸŸ¡ Naranja</option>
+            <option value="orange-first">Asc: Naranja, Rojo</option>
+            <option value="red-first">Desc: Rojo, Naranja</option>
           </select>
         </div>
       </section>
@@ -736,14 +750,14 @@ export default function App() {
         <section className="panel">
           {filteredItems.map((item) => (
             <article key={item.id} className={`item-row ${hayClass(item.hay)}`}>
-              <span className="item-row-name">{item.nombre}</span>
+              <span className="item-row-name">{normalizeUiText(item.nombre)}</span>
               <span className="item-row-stat">HAY <strong>{item.hay}</strong></span>
               <span className="item-row-stat">SUG <strong>{item.sugerida}</strong></span>
               <span className="item-row-cat">{CATEGORY_LABELS[item.categoria] || `Cat. ${item.categoria}`}</span>
             </article>
           ))}
           {filteredItems.length === 0 && (
-            <p className="empty-msg">No hay artÃ­culos que coincidan con los filtros.</p>
+            <p className="empty-msg">No hay articulos que coincidan con los filtros.</p>
           )}
         </section>
       )}
@@ -774,7 +788,7 @@ export default function App() {
                   }}
                   title="Gestionar supermercados"
                 >
-                  Super {storeMenuOpen ? "â–¾" : "â–¸"}
+                  Super {storeMenuOpen ? "v" : ">"}
                 </button>
                 {storeMenuOpen && (
                   <div className="store-menu">
@@ -857,7 +871,7 @@ export default function App() {
                   if (!productMenuOpen) resetProductForm();
                 }}
               >
-                Productos {productMenuOpen ? "â–¾" : "â–¸"}
+                Productos {productMenuOpen ? "v" : ">"}
               </button>
               <button className="primary" id="btn-save" type="button" onClick={() => void saveCurrentRound()}>
                 Guardar ronda
@@ -869,6 +883,7 @@ export default function App() {
                   <label className="fecha-label">
                     Producto existente
                     <select
+                      className="h-10 w-full rounded-lg border border-border-subtle bg-white px-3 text-sm text-text-primary outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
                       value={editingItemId}
                       onChange={(e) => {
                         const id = e.target.value;
@@ -887,7 +902,7 @@ export default function App() {
                     >
                       <option value="">Nuevo producto...</option>
                       {items.map((item) => (
-                        <option key={item.id} value={item.id}>{item.nombre} â€” HAY: {item.hay}</option>
+                        <option key={item.id} value={item.id}>{normalizeUiText(item.nombre)} - HAY: {item.hay}</option>
                       ))}
                     </select>
                   </label>
@@ -903,8 +918,9 @@ export default function App() {
                     />
                   </label>
                   <label className="fecha-label">
-                    CategorÃƒÂ­a
+                    Categoria
                     <select
+                      className="h-10 w-full rounded-lg border border-border-subtle bg-white px-3 text-sm text-text-primary outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
                       value={String(productCategory)}
                       onChange={(e) => setProductCategory(Number(e.target.value) || 1)}
                     >
@@ -961,7 +977,7 @@ export default function App() {
               />
             ))}
             {filteredItems.length === 0 && (
-              <p className="empty-msg">No hay artÃ­culos que coincidan con los filtros.</p>
+            <p className="empty-msg">No hay articulos que coincidan con los filtros.</p>
             )}
           </div>
         </section>
@@ -992,7 +1008,7 @@ export default function App() {
               return (
                 <div key={item.id} className={`compare-row ${hayClass(item.hay)}`}>
                   <div className="compare-name-col">
-                    <span className="item-row-name">{item.nombre}</span>
+                    <span className="item-row-name">{normalizeUiText(item.nombre)}</span>
                     <span className="item-row-stat" style={{ fontSize: "0.72rem" }}>HAY {item.hay}</span>
                   </div>
                   {prices.map((p, i) => (
@@ -1003,9 +1019,9 @@ export default function App() {
                       {p && p.subtotal > 0 ? (
                         <>
                           <span>${p.subtotal.toFixed(2)}</span>
-                          {p.inCart && <span className="cart-icon-sm">ðŸ›’</span>}
+                          {p.inCart && <span className="cart-icon-sm">Cart</span>}
                         </>
-                      ) : "â€”"}
+                      ) : "-"}
                     </div>
                   ))}
                 </div>
@@ -1022,7 +1038,7 @@ export default function App() {
       {status && (
         <div className="toast-notification" role="alert">
           <span>{status}</span>
-          <button type="button" className="toast-close" onClick={() => setStatus("")} aria-label="Cerrar">âœ•</button>
+          <button type="button" className="toast-close" onClick={() => setStatus("")} aria-label="Cerrar">x</button>
         </div>
       )}
     </div>

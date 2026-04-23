@@ -12,6 +12,17 @@ interface ItemCardProps {
 }
 
 const hayClass = (hay: number): string => (hay > 5 ? "priority-red" : hay > 0 ? "priority-orange" : "");
+const normalizeUiText = (value: string): string =>
+  value
+    .replace(/â€“|â€”/g, "-")
+    .replace(/Ã¡/g, "a")
+    .replace(/Ã©/g, "e")
+    .replace(/Ã­/g, "i")
+    .replace(/Ã³/g, "o")
+    .replace(/Ãº/g, "u")
+    .replace(/Ã±/g, "n")
+    .replace(/Ã/g, "")
+    .replace(/Â/g, "");
 
 export const ItemCard = React.memo(function ItemCard({ item, entry, onUpdate, onToggleCart, onBumpQuantity }: ItemCardProps) {
   const [localPrecio, setLocalPrecio] = useState(entry?.precioUnitario !== undefined ? entry.precioUnitario.toString() : "");
@@ -41,7 +52,7 @@ export const ItemCard = React.memo(function ItemCard({ item, entry, onUpdate, on
   return (
     <article className={`item-card ${hayClass(item.hay)} ${entry?.inCart ? "in-cart" : ""}`}>
       <div className="item-row compact">
-        <span className="item-row-name">{item.nombre}</span>
+        <span className="item-row-name">{normalizeUiText(item.nombre)}</span>
         <span className="item-row-stat">HAY <strong>{item.hay}</strong></span>
         <span className="item-row-stat">SUG <strong>{item.sugerida}</strong></span>
         <span className="item-row-cat">{CATEGORY_LABELS[item.categoria]}</span>
