@@ -39,6 +39,8 @@ interface ShoppingViewProps {
 
   onDateChange: (value: string | null) => void;
   onToggleProductMenu: () => void;
+  onLoadHistoryFromSheets: () => void;
+  historyLoading: boolean;
   onSaveRound: () => void;
 
   onSelectExistingProduct: (itemId: string) => void;
@@ -85,6 +87,8 @@ export function ShoppingView({
   onDisableStore,
   onDateChange,
   onToggleProductMenu,
+  onLoadHistoryFromSheets,
+  historyLoading,
   onSaveRound,
   onSelectExistingProduct,
   onProductNameChange,
@@ -149,6 +153,14 @@ export function ShoppingView({
             onClick={onToggleProductMenu}
           >
             Productos {productMenuOpen ? "v" : ">"}
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            onClick={onLoadHistoryFromSheets}
+            disabled={historyLoading}
+          >
+            {historyLoading ? "Cargando..." : "Cargar historial"}
           </button>
           <button className="primary" id="btn-save" type="button" onClick={onSaveRound}>
             Guardar ronda

@@ -82,6 +82,7 @@ export default function App() {
   const [entryMap, setEntryMap] = useState<Record<string, Entry>>({});
   const [totals, setTotals] = useState<StoreTotal[]>(() => initialTotals(activeStores));
   const [status, setStatus] = useState("Cargando...");
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [signedIn, setSignedIn] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
@@ -205,39 +206,13 @@ export default function App() {
     async function loadHistory() {
       const targetDate = currentRonda.fecha;
       if (!targetDate) return;
-      setStatus(`Buscando datos del ${targetDate} en Sheets...`);
+      setStatus(`Sesion iniciada para ${targetDate}. Sin carga automatica de historial.`);
       try {
         const sessionId = await getOrCreateLiveSessionId(targetDate);
         setLiveSessionId(sessionId);
-        const { entries: sheetEntries } = await fetchRound(targetDate);
-        setAllowFirestoreLiveForDate(true);
-        if (sheetEntries.length > 0) {
-          setEntryMap(prev => {
-            const next = { ...prev };
-            sheetEntries.forEach((se: any) => {
-              const key = entryKey(se.supermercado, se.itemId);
-              // Solo cargamos el dato de Sheets si no tenemos ya algo editÃ¡ndose "en vivo" 
-              // (lo de Firebase tiene prioridad segÃºn lo pedido)
-              if (!next[key]) {
-                next[key] = {
-                  ...se,
-                  id: makeId(),
-                  rondaId: currentRonda.id,
-                  sessionId,
-                  fecha: targetDate,
-                  subtotal: toMoney(se.precioUnitario * se.cantidad),
-                  inCart: true,
-                  offline: false,
-                  createdAt: nowIso()
-                };
-              }
-            });
-            return next;
-          });
-          setStatus(`Se sincronizaron ${sheetEntries.length} articulos del historial.`);
-        } else {
-          setStatus(`No hay registros en Sheets para ${targetDate}. Sesion colaborativa activa.`);
-        }
+        // Importante: evitamos lectura live automatica para no hidratar entradas viejas.
+        // El historial se carga solo con el boton "Cargar historial".
+        setAllowFirestoreLiveForDate(false);
       } catch (err) {
         setAllowFirestoreLiveForDate(false);
         setLiveSessionId(null);
@@ -269,6 +244,7 @@ export default function App() {
         const next = { ...prev };
         let changed = false;
         liveEntries.forEach(le => {
+          if (!activeStores.includes(normalizeStoreName(String(le.supermercado)))) return;
           // Ignorar nuestras propias actualizaciones para no pisar el input mientras escribimos
           if ((le as any).sender === CLIENT_ID) return;
 
@@ -286,9 +262,9 @@ export default function App() {
         });
         return changed ? next : prev;
       });
-    });
+    }, { skipInitialSnapshot: true });
     return () => unsub();
-  }, [signedIn, currentRonda.fecha, allowFirestoreLiveForDate, liveSessionId]);
+  }, [signedIn, currentRonda.fecha, allowFirestoreLiveForDate, liveSessionId, activeStores]);
 
   async function handleSignIn() {
     setAuthLoading(true);
@@ -631,6 +607,67 @@ export default function App() {
     }
   }
 
+  async function handleLoadHistoryFromSheets() {
+    if (!currentRonda.fecha) {
+      setStatus("Selecciona una fecha antes de cargar historial.");
+      return;
+    }
+    setHistoryLoading(true);
+    setStatus(`Cargando historial de Sheets para ${currentRonda.fecha}...`);
+    try {
+      const { entries: sheetEntries } = await fetchRound(currentRonda.fecha);
+      if (!Array.isArray(sheetEntries) || sheetEntries.length === 0) {
+        setStatus(`No hay historial en Sheets para ${currentRonda.fecha}.`);
+        return;
+      }
+
+      let mergedCount = 0;
+      setEntryMap((prev) => {
+        const next = { ...prev };
+        sheetEntries.forEach((se: any) => {
+          const store = normalizeStoreName(String(se?.supermercado ?? ""));
+          if (!store || !activeStores.includes(store)) return;
+          const itemId = String(se?.itemId ?? "");
+          if (!itemId) return;
+
+          const key = entryKey(store, itemId);
+          const local = prev[key];
+
+          const incoming: Entry = {
+            id: local?.id ?? makeId(),
+            rondaId: currentRonda.id,
+            sessionId: liveSessionId ?? undefined,
+            fecha: currentRonda.fecha,
+            supermercado: store,
+            itemId,
+            precioUnitario: Number(se?.precioUnitario) || 0,
+            cantidad: Math.round(Number(se?.cantidad) || 0),
+            subtotal: toMoney((Number(se?.precioUnitario) || 0) * (Math.round(Number(se?.cantidad) || 0))),
+            inCart: true,
+            offline: !navigator.onLine,
+            createdAt: local?.createdAt ?? nowIso(),
+            updatedAt: nowIso(),
+            sender: "sheets-history-load"
+          };
+
+          const localTs = entryTimestamp(local);
+          const incomingTs = entryTimestamp(incoming);
+          if (local && localTs > 0 && incomingTs > 0 && localTs >= incomingTs) return;
+
+          next[key] = incoming;
+          mergedCount += 1;
+        });
+        return next;
+      });
+
+      setStatus(`Historial cargado manualmente: ${mergedCount} articulos actualizados.`);
+    } catch (error) {
+      setStatus(`No se pudo cargar historial: ${String(error)}`);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
   if (!signedIn) {
     return <LoginScreen authLoading={authLoading} status={status} onSignIn={() => void handleSignIn()} />;
   }
@@ -769,6 +806,8 @@ export default function App() {
             setProductMenuOpen((prev) => !prev);
             if (!productMenuOpen) resetProductForm();
           }}
+          onLoadHistoryFromSheets={() => void handleLoadHistoryFromSheets()}
+          historyLoading={historyLoading}
           onSaveRound={() => void saveCurrentRound()}
           onSelectExistingProduct={(id) => {
             setEditingItemId(id);

@@ -128,13 +128,24 @@ export async function getOrCreateLiveSessionId(fecha: string): Promise<string> {
 /**
  * Suscribe a los cambios en tiempo real de los entries para una fecha y sesion específica.
  */
-export function listenToLiveEntries(fecha: string, sessionId: string, callback: (entries: Entry[]) => void): () => void {
+export function listenToLiveEntries(
+  fecha: string,
+  sessionId: string,
+  callback: (entries: Entry[]) => void,
+  options?: { skipInitialSnapshot?: boolean }
+): () => void {
   const q = query(
     collection(db, ENTRIES_COL),
     where("fecha", "==", fecha),
     where("sessionId", "==", sessionId)
   );
+  let isFirstSnapshot = true;
   return onSnapshot(q, (snap) => {
+    if (options?.skipInitialSnapshot && isFirstSnapshot) {
+      isFirstSnapshot = false;
+      return;
+    }
+    isFirstSnapshot = false;
     const entries = snap.docs.map(d => d.data() as Entry);
     callback(entries);
   }, (err) => {
