@@ -1,4 +1,4 @@
-﻿import { useMemo } from "react";
+import { useMemo } from "react";
 import { CategoryId, Item } from "../../../types";
 
 export type PriorityMode = "orange-first" | "red-first";
@@ -16,7 +16,7 @@ const matchesPriorityFilter = (hay: number, filter: PriorityFilter): boolean => 
   return hay === 0;
 };
 
-export function useItemFilters(params: {
+export function useProductFilters(params: {
   items: Item[];
   search: string;
   categoryFilter: CategoryId | "all";

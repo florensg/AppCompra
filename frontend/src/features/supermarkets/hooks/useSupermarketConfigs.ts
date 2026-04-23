@@ -1,4 +1,4 @@
-﻿import { useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { BASE_STORES } from "../../../constants";
 import { StoreConfig, StoreName } from "../../../types";
 
@@ -73,7 +73,7 @@ export const loadStoredStoreConfigs = (): StoreConfig[] => {
   }
 };
 
-export function useStoreConfigs() {
+export function useSupermarketConfigs() {
   const [storeConfigs, setStoreConfigs] = useState<StoreConfig[]>(() => loadStoredStoreConfigs());
 
   const activeStores = useMemo(

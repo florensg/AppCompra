@@ -1,49 +1,36 @@
 ﻿import React, { useEffect, useMemo, useRef, useState } from "react";
 import { BASE_STORES, CATEGORY_LABELS } from "./constants";
 import {
-  createCatalogItem,
-  deleteCatalogItem,
   fetchBootstrap,
   fetchRound,
   fetchTotals,
   sendEntriesBatch,
-  syncEntries,
-  updateCatalogItem
+  syncEntries
 } from "./api";
 import { signIn, signOut as authSignOut, onAuthStatusChange } from "./auth";
 import { db } from "./db";
 import { cleanupDuplicateEntriesForDate, getOrCreateLiveSessionId, listenToLiveEntries, saveDraftEntry } from "./firestoreApi";
 import { CategoryId, Entry, Item, Ronda, StoreName, StoreTotal, SyncJob } from "./types";
 import { makeId, nowIso, toMoney } from "./utils";
-import { LoginScreen } from "./features/auth/components/LoginScreen";
-import { ItemCard } from "./features/round/components/ItemCard";
+import { LoginScreen } from "./features/auth";
+import { ShoppingView } from "./features/shopping";
+import { ComparisonView } from "./features/comparison";
+import { ProductListView, productsAdminService, PriorityFilter, PriorityMode, useProductFilters } from "./features/products";
 import { AppHeader } from "./shared/ui/AppHeader";
 import {
-  createStoreConfig,
   mergeStoreConfigs,
   normalizeStoreName,
-  sortStoreConfigs,
-  useStoreConfigs
-} from "./features/stores/hooks/useStoreConfigs";
-import { PriorityFilter, PriorityMode, useItemFilters } from "./features/catalog/hooks/useItemFilters";
+  useSupermarketConfigs,
+  activateSupermarket,
+  addSupermarket,
+  disableSupermarket
+} from "./features/supermarkets";
 import "./styles.css";
 
 type View = "lista" | "carga" | "comparacion";
 const DEFAULT_VIEW: View = "carga";
 const normalizeProductName = (name: string): string =>
   name.trim().replace(/\s+/g, " ").toLowerCase();
-const normalizeUiText = (value: string): string =>
-  value
-    .replace(/â€“|â€”/g, "-")
-    .replace(/Ã¡/g, "a")
-    .replace(/Ã©/g, "e")
-    .replace(/Ã­/g, "i")
-    .replace(/Ã³/g, "o")
-    .replace(/Ãº/g, "u")
-    .replace(/Ã±/g, "n")
-    .replace(/Ã/g, "")
-    .replace(/Â/g, "");
-
 const newRonda = (storesActivos: StoreName[]): Ronda => ({
   id: makeId(),
   fecha: nowIso().slice(0, 10),
@@ -71,13 +58,9 @@ const entryTimestamp = (entry: Partial<Entry> | null | undefined): number => {
   return Number.isFinite(t) ? t : 0;
 };
 
-// â”€â”€ Priority helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-const hayClass = (hay: number): string =>
-  hay > 5 ? "priority-red" : hay > 0 ? "priority-orange" : "";
-
-// â”€â”€ Memoized ItemCard Component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// â”€â”€ Main App Coordinator â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export default function App() {
-  const { storeConfigs, setStoreConfigs, activeStores, inactiveStores, storesStorageKey } = useStoreConfigs();
+  const { storeConfigs, setStoreConfigs, activeStores, inactiveStores, storesStorageKey } = useSupermarketConfigs();
   const [view, setView] = useState<View>(DEFAULT_VIEW);
   const [items, setItems] = useState<Item[]>([]);
   const [currentRonda, setCurrentRonda] = useState<Ronda>(() => newRonda(activeStores));
@@ -332,7 +315,7 @@ export default function App() {
     recalcTotals(entryMap);
   }, [entryMap, activeStores]);
 
-  const filteredItems = useItemFilters({
+  const filteredItems = useProductFilters({
     items,
     search,
     categoryFilter,
@@ -381,9 +364,7 @@ export default function App() {
   }
 
   function activateStore(storeName: StoreName) {
-    setStoreConfigs((prev) =>
-      sortStoreConfigs(prev.map((store) => (store.name === storeName ? { ...store, isActive: true } : store)))
-    );
+    setStoreConfigs((prev) => activateSupermarket(prev, storeName));
     setSelectedStore(storeName);
     setStoreMenuOpen(false);
     setShowAddStoreInput(false);
@@ -392,9 +373,7 @@ export default function App() {
 
   function disableStore(storeName: StoreName) {
     if (BASE_STORES.includes(storeName)) return;
-    setStoreConfigs((prev) =>
-      sortStoreConfigs(prev.map((store) => (store.name === storeName ? { ...store, isActive: false } : store)))
-    );
+    setStoreConfigs((prev) => disableSupermarket(prev, storeName));
     setStoreMenuOpen(false);
     setShowAddStoreInput(false);
     if (selectedStore === storeName) {
@@ -417,7 +396,7 @@ export default function App() {
       setNewStoreName("");
       return;
     }
-    setStoreConfigs((prev) => sortStoreConfigs([...prev, createStoreConfig(normalized, false, false)]));
+    setStoreConfigs((prev) => addSupermarket(prev, normalized));
     setShowAddStoreInput(false);
     setNewStoreName("");
     setStatus(`${normalized} agregado. Podes activarlo desde el menu +.`);
@@ -442,7 +421,7 @@ export default function App() {
       return;
     }
     try {
-      await createCatalogItem({ nombre, categoria: productCategory, hay: productHay });
+      await productsAdminService.create({ nombre, categoria: productCategory, hay: productHay });
       await bootstrap();
       resetProductForm();
       setStatus(`Producto agregado: ${nombre}.`);
@@ -469,7 +448,7 @@ export default function App() {
       return;
     }
     try {
-      await updateCatalogItem({
+      await productsAdminService.update({
         itemId: editingItem.id,
         nombre,
         categoria: productCategory,
@@ -490,7 +469,7 @@ export default function App() {
     const confirmed = window.confirm(`Eliminar ${editingItem.nombre}?`);
     if (!confirmed) return;
     try {
-      await deleteCatalogItem({ itemId: editingItem.id });
+      await productsAdminService.remove({ itemId: editingItem.id });
       setEntryMap({});
       await bootstrap();
       resetProductForm();
@@ -747,291 +726,85 @@ export default function App() {
  
       {/* â”€â”€ Lista â”€â”€ */}
       {view === "lista" && (
-        <section className="panel">
-          {filteredItems.map((item) => (
-            <article key={item.id} className={`item-row ${hayClass(item.hay)}`}>
-              <span className="item-row-name">{normalizeUiText(item.nombre)}</span>
-              <span className="item-row-stat">HAY <strong>{item.hay}</strong></span>
-              <span className="item-row-stat">SUG <strong>{item.sugerida}</strong></span>
-              <span className="item-row-cat">{CATEGORY_LABELS[item.categoria] || `Cat. ${item.categoria}`}</span>
-            </article>
-          ))}
-          {filteredItems.length === 0 && (
-            <p className="empty-msg">No hay articulos que coincidan con los filtros.</p>
-          )}
-        </section>
+        <ProductListView items={filteredItems} />
       )}
 
       {/* â”€â”€ Carga â”€â”€ */}
       {view === "carga" && (
-        <section className="panel carga-panel">
-          <div className="carga-sticky-header">
-            <div className="store-switcher">
-              {activeStores.map((store) => (
-                <button
-                  key={store}
-                  type="button"
-                  className={selectedStore === store ? "store active" : "store"}
-                  onClick={() => setSelectedStore(store)}
-                >
-                  {store}
-                </button>
-              ))}
-              <div className="store-menu-wrap">
-                <button
-                  type="button"
-                  className={`store add-store-btn ${storeMenuOpen ? "active" : ""}`}
-                  onClick={() => {
-                    setStoreMenuOpen((prev) => !prev);
-                    setShowAddStoreInput(false);
-                    setNewStoreName("");
-                  }}
-                  title="Gestionar supermercados"
-                >
-                  Super {storeMenuOpen ? "v" : ">"}
-                </button>
-                {storeMenuOpen && (
-                  <div className="store-menu">
-                    <button
-                      type="button"
-                      className="store-menu-action"
-                      onClick={() => {
-                        setShowAddStoreInput(true);
-                      }}
-                    >
-                      + Agregar supermercado
-                    </button>
-                    {showAddStoreInput && (
-                      <div className="store-add-form">
-                        <input
-                          ref={addStoreInputRef}
-                          type="text"
-                          value={newStoreName}
-                          onChange={(e) => setNewStoreName(e.target.value)}
-                          placeholder="Nombre del supermercado"
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                              addStore();
-                            }
-                          }}
-                        />
-                        <button type="button" onClick={addStore}>Agregar</button>
-                      </div>
-                    )}
-                    {inactiveStores.map((store) => (
-                      <button
-                        key={store}
-                        type="button"
-                        className="store-menu-item"
-                        onClick={() => activateStore(store)}
-                      >
-                        {store}
-                      </button>
-                    ))}
-                    {hasDisableOptions && (
-                      <div className="store-menu-group-label">Activos</div>
-                    )}
-                    {optionalActiveStores.map((store) => (
-                      <button
-                        key={`disable-${store}`}
-                        type="button"
-                        className="store-menu-item warn"
-                        onClick={() => disableStore(store)}
-                      >
-                        Ocultar {store}
-                      </button>
-                    ))}
-                    {!hasStoreMenuOptions && (
-                      <p className="store-menu-empty">No hay supermercados inactivos.</p>
-                    )}
-                  </div>
-                )}
-              </div>
-              <div className="store-total">
-                Carrito: <strong>${currentStoreTotal.toFixed(2)}</strong>
-              </div>
-            </div>
-            <div className="actions-row">
-              <label className="fecha-label">
-                Fecha
-                <input
-                  type="date"
-                  value={currentRonda.fecha ?? ""}
-                  onChange={(e) => {
-                    const value = e.target.value || null;
-                    setCurrentRonda((prev) => ({ ...prev, fecha: value }));
-                  }}
-                />
-              </label>
-              <button
-                type="button"
-                className="secondary"
-                onClick={() => {
-                  setProductMenuOpen((prev) => !prev);
-                  if (!productMenuOpen) resetProductForm();
-                }}
-              >
-                Productos {productMenuOpen ? "v" : ">"}
-              </button>
-              <button className="primary" id="btn-save" type="button" onClick={() => void saveCurrentRound()}>
-                Guardar ronda
-              </button>
-            </div>
-            {productMenuOpen && (
-              <div className="product-admin-panel">
-                <div className="product-admin-row">
-                  <label className="fecha-label">
-                    Producto existente
-                    <select
-                      className="h-10 w-full rounded-lg border border-border-subtle bg-white px-3 text-sm text-text-primary outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
-                      value={editingItemId}
-                      onChange={(e) => {
-                        const id = e.target.value;
-                        setEditingItemId(id);
-                        if (id) {
-                          const found = items.find((i) => i.id === id);
-                          if (found) {
-                            setProductName(found.nombre);
-                            setProductCategory(found.categoria);
-                            setProductHay(found.hay);
-                          }
-                        } else {
-                          resetProductForm();
-                        }
-                      }}
-                    >
-                      <option value="">Nuevo producto...</option>
-                      {items.map((item) => (
-                        <option key={item.id} value={item.id}>{normalizeUiText(item.nombre)} - HAY: {item.hay}</option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-                <div className="product-admin-row">
-                  <label className="fecha-label">
-                    Nombre
-                    <input
-                      type="text"
-                      value={productName}
-                      onChange={(e) => setProductName(e.target.value)}
-                      placeholder="Ej: Yerba 1kg"
-                    />
-                  </label>
-                  <label className="fecha-label">
-                    Categoria
-                    <select
-                      className="h-10 w-full rounded-lg border border-border-subtle bg-white px-3 text-sm text-text-primary outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
-                      value={String(productCategory)}
-                      onChange={(e) => setProductCategory(Number(e.target.value) || 1)}
-                    >
-                      {Object.entries(CATEGORY_LABELS).map(([id, label]) => (
-                        <option key={id} value={id}>{label}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="fecha-label">
-                    HAY
-                    <input
-                      type="number"
-                      min="0"
-                      step="1"
-                      value={String(productHay)}
-                      onChange={(e) => setProductHay(Math.max(0, Number(e.target.value) || 0))}
-                    />
-                  </label>
-                </div>
-                <div className="product-admin-actions">
-                  <button type="button" className="secondary" onClick={() => void handleCreateProduct()}>
-                    Agregar
-                  </button>
-                  <button
-                    type="button"
-                    className="secondary"
-                    disabled={!editingItemId}
-                    onClick={() => void handleUpdateProduct()}
-                  >
-                    Modificar
-                  </button>
-                  <button
-                    type="button"
-                    className="secondary danger"
-                    disabled={!editingItemId}
-                    onClick={() => void handleDeleteProduct()}
-                  >
-                    Eliminar
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="carga-items-list">
-            {filteredItems.map((item) => (
-              <ItemCard
-                key={item.id}
-                item={item}
-                entry={entryMap[entryKey(selectedStore, item.id)]}
-                onUpdate={updateEntry}
-                onToggleCart={toggleCart}
-                onBumpQuantity={bumpQuantity}
-              />
-            ))}
-            {filteredItems.length === 0 && (
-            <p className="empty-msg">No hay articulos que coincidan con los filtros.</p>
-            )}
-          </div>
-        </section>
+        <ShoppingView
+          items={items}
+          activeStores={activeStores}
+          selectedStore={selectedStore}
+          currentStoreTotal={currentStoreTotal}
+          currentRonda={currentRonda}
+          filteredItems={filteredItems}
+          entryMap={entryMap}
+          entryKey={entryKey}
+          storeMenuOpen={storeMenuOpen}
+          showAddStoreInput={showAddStoreInput}
+          newStoreName={newStoreName}
+          inactiveStores={inactiveStores}
+          optionalActiveStores={optionalActiveStores}
+          hasDisableOptions={hasDisableOptions}
+          hasStoreMenuOptions={hasStoreMenuOptions}
+          addStoreInputRef={addStoreInputRef}
+          productMenuOpen={productMenuOpen}
+          editingItemId={editingItemId}
+          productName={productName}
+          productCategory={productCategory}
+          productHay={productHay}
+          onSelectedStoreChange={setSelectedStore}
+          onToggleStoreMenu={() => {
+            setStoreMenuOpen((prev) => !prev);
+            setShowAddStoreInput(false);
+            setNewStoreName("");
+          }}
+          onShowAddStoreInput={() => setShowAddStoreInput(true)}
+          onNewStoreNameChange={setNewStoreName}
+          onAddStore={addStore}
+          onActivateStore={activateStore}
+          onDisableStore={disableStore}
+          onDateChange={(value) => setCurrentRonda((prev) => ({ ...prev, fecha: value }))}
+          onToggleProductMenu={() => {
+            setProductMenuOpen((prev) => !prev);
+            if (!productMenuOpen) resetProductForm();
+          }}
+          onSaveRound={() => void saveCurrentRound()}
+          onSelectExistingProduct={(id) => {
+            setEditingItemId(id);
+            if (id) {
+              const found = items.find((i) => i.id === id);
+              if (found) {
+                setProductName(found.nombre);
+                setProductCategory(found.categoria);
+                setProductHay(found.hay);
+              }
+            } else {
+              resetProductForm();
+            }
+          }}
+          onProductNameChange={setProductName}
+          onProductCategoryChange={(value) => setProductCategory(value)}
+          onProductHayChange={(value) => setProductHay(value)}
+          onCreateProduct={() => void handleCreateProduct()}
+          onUpdateProduct={() => void handleUpdateProduct()}
+          onDeleteProduct={() => void handleDeleteProduct()}
+          onUpdateEntry={updateEntry}
+          onToggleCart={toggleCart}
+          onBumpQuantity={bumpQuantity}
+        />
       )}
 
       {/* â”€â”€ ComparaciÃ³n â”€â”€ */}
       {view === "comparacion" && (
-        <section className="panel">
-          <div className="compare-header">
-            <div className="compare-name-col">Producto / HAY</div>
-            {activeStores.map((s) => (
-              <div key={s} className="compare-store-col">
-                <div className="compare-store-name">{s}</div>
-                <div className="compare-store-total">
-                  ${totals.find((t) => t.supermercado === s)?.total.toFixed(0) ?? "0"}
-                </div>
-              </div>
-            ))}
-          </div>
-          <div className="compare-body">
-            {filteredItems.map((item) => {
-              const prices = activeStores.map((s) => {
-                const e = entryMap[entryKey(s, item.id)];
-                return e ? { subtotal: e.subtotal, inCart: e.inCart } : null;
-              });
-              const validPrices = prices.filter((p): p is { subtotal: number; inCart: boolean } => p !== null && p.subtotal > 0);
-              const minPrice = validPrices.length > 0 ? Math.min(...validPrices.map((p) => p.subtotal)) : null;
-              return (
-                <div key={item.id} className={`compare-row ${hayClass(item.hay)}`}>
-                  <div className="compare-name-col">
-                    <span className="item-row-name">{normalizeUiText(item.nombre)}</span>
-                    <span className="item-row-stat" style={{ fontSize: "0.72rem" }}>HAY {item.hay}</span>
-                  </div>
-                  {prices.map((p, i) => (
-                    <div
-                      key={activeStores[i]}
-                      className={`compare-price-col ${p && p.subtotal > 0 && p.subtotal === minPrice ? "best-price" : ""} ${p?.inCart ? "is-cart" : ""}`}
-                    >
-                      {p && p.subtotal > 0 ? (
-                        <>
-                          <span>${p.subtotal.toFixed(2)}</span>
-                          {p.inCart && <span className="cart-icon-sm">Cart</span>}
-                        </>
-                      ) : "-"}
-                    </div>
-                  ))}
-                </div>
-              );
-            })}
-          </div>
-          <button type="button" className="secondary refresh-btn" onClick={() => void refreshRemoteTotals()}>
-            Actualizar totales
-          </button>
-        </section>
+        <ComparisonView
+          items={filteredItems}
+          activeStores={activeStores}
+          totals={totals}
+          entryMap={entryMap}
+          entryKey={entryKey}
+          onRefreshTotals={() => void refreshRemoteTotals()}
+        />
       )}
 
       {/* â”€â”€ Toast â”€â”€ */}

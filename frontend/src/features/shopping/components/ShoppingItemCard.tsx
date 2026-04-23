@@ -1,9 +1,9 @@
-﻿import React, { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { CATEGORY_LABELS } from "../../../constants";
 import { Entry, Item } from "../../../types";
 import { parseDecimal } from "../../../utils";
 
-interface ItemCardProps {
+interface ShoppingItemCardProps {
   item: Item;
   entry?: Entry;
   onUpdate: (item: Item, patch: Partial<Pick<Entry, "precioUnitario" | "cantidad">>) => void;
@@ -24,7 +24,13 @@ const normalizeUiText = (value: string): string =>
     .replace(/Ã/g, "")
     .replace(/Â/g, "");
 
-export const ItemCard = React.memo(function ItemCard({ item, entry, onUpdate, onToggleCart, onBumpQuantity }: ItemCardProps) {
+export const ShoppingItemCard = React.memo(function ShoppingItemCard({
+  item,
+  entry,
+  onUpdate,
+  onToggleCart,
+  onBumpQuantity
+}: ShoppingItemCardProps) {
   const [localPrecio, setLocalPrecio] = useState(entry?.precioUnitario !== undefined ? entry.precioUnitario.toString() : "");
   const [localCantidad, setLocalCantidad] = useState(entry?.cantidad !== undefined ? entry.cantidad.toString() : "");
   const hasEntry = entry && (entry.precioUnitario > 0 || entry.cantidad > 0);
