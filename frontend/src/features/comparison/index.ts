@@ -1,1 +1,2 @@
-export { ComparisonView } from "./components/ComparisonView";
+﻿export { ComparisonView } from "./components/ComparisonView";
+export { useComparisonModule } from "./hooks/useComparisonModule";

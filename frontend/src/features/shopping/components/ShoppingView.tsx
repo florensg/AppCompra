@@ -1,140 +1,61 @@
-import React from "react";
-import { Entry, Item, Ronda, StoreName } from "../../../types";
+﻿import React from "react";
 import { ShoppingItemCard } from "./ShoppingItemCard";
 import { SupermarketManagerMenu } from "../../supermarkets/admin/components/SupermarketManagerMenu";
 import { ProductAdminPanel } from "../../products/admin/components/ProductAdminPanel";
+import { useShoppingModule } from "../hooks/useShoppingModule";
+import { useGlobalUI } from "../../ui";
+import { useProductFilters } from "../../products";
 
-interface ShoppingViewProps {
-  items: Item[];
-  activeStores: StoreName[];
-  selectedStore: StoreName;
-  currentStoreTotal: number;
-  currentRonda: Ronda;
-  filteredItems: Item[];
-  entryMap: Record<string, Entry>;
-  entryKey: (store: StoreName, itemId: string) => string;
+export function ShoppingView() {
+  const shopping = useShoppingModule();
+  const ui = useGlobalUI();
 
-  storeMenuOpen: boolean;
-  showAddStoreInput: boolean;
-  newStoreName: string;
-  inactiveStores: StoreName[];
-  optionalActiveStores: StoreName[];
-  hasDisableOptions: boolean;
-  hasStoreMenuOptions: boolean;
-  addStoreInputRef: React.RefObject<HTMLInputElement>;
+  const filteredItems = useProductFilters({
+    items: shopping.items,
+    search: ui.search,
+    categoryFilter: ui.categoryFilter,
+    priorityFilter: ui.priorityFilter,
+    priorityMode: ui.priorityMode
+  });
 
-  productMenuOpen: boolean;
-  editingItemId: string;
-  productName: string;
-  productCategory: number;
-  productHay: number;
-
-  onSelectedStoreChange: (store: StoreName) => void;
-  onToggleStoreMenu: () => void;
-  onShowAddStoreInput: () => void;
-  onNewStoreNameChange: (value: string) => void;
-  onAddStore: () => void;
-  onActivateStore: (store: StoreName) => void;
-  onDisableStore: (store: StoreName) => void;
-
-  onDateChange: (value: string | null) => void;
-  onToggleProductMenu: () => void;
-  onLoadHistoryFromSheets: () => void;
-  historyLoading: boolean;
-  onSaveRound: () => void;
-
-  onSelectExistingProduct: (itemId: string) => void;
-  onProductNameChange: (value: string) => void;
-  onProductCategoryChange: (value: number) => void;
-  onProductHayChange: (value: number) => void;
-  onCreateProduct: () => void;
-  onUpdateProduct: () => void;
-  onDeleteProduct: () => void;
-
-  onUpdateEntry: (item: Item, patch: Partial<Pick<Entry, "precioUnitario" | "cantidad">>) => void;
-  onToggleCart: (item: Item) => void;
-  onBumpQuantity: (item: Item, delta: number) => void;
-}
-
-export function ShoppingView({
-  items,
-  activeStores,
-  selectedStore,
-  currentStoreTotal,
-  currentRonda,
-  filteredItems,
-  entryMap,
-  entryKey,
-  storeMenuOpen,
-  showAddStoreInput,
-  newStoreName,
-  inactiveStores,
-  optionalActiveStores,
-  hasDisableOptions,
-  hasStoreMenuOptions,
-  addStoreInputRef,
-  productMenuOpen,
-  editingItemId,
-  productName,
-  productCategory,
-  productHay,
-  onSelectedStoreChange,
-  onToggleStoreMenu,
-  onShowAddStoreInput,
-  onNewStoreNameChange,
-  onAddStore,
-  onActivateStore,
-  onDisableStore,
-  onDateChange,
-  onToggleProductMenu,
-  onLoadHistoryFromSheets,
-  historyLoading,
-  onSaveRound,
-  onSelectExistingProduct,
-  onProductNameChange,
-  onProductCategoryChange,
-  onProductHayChange,
-  onCreateProduct,
-  onUpdateProduct,
-  onDeleteProduct,
-  onUpdateEntry,
-  onToggleCart,
-  onBumpQuantity
-}: ShoppingViewProps) {
   return (
     <section className="panel carga-panel">
       <div className="carga-sticky-header">
         <div className="store-switcher">
-          {activeStores.map((store) => (
+          {shopping.activeStores.map((store) => (
             <button
               key={store}
               type="button"
-              className={selectedStore === store ? "store active" : "store"}
-              onClick={() => onSelectedStoreChange(store)}
+              className={shopping.selectedStore === store ? "store active" : "store"}
+              onClick={() => shopping.setSelectedStore(store)}
             >
               {store}
             </button>
           ))}
 
           <SupermarketManagerMenu
-            storeMenuOpen={storeMenuOpen}
-            showAddStoreInput={showAddStoreInput}
-            newStoreName={newStoreName}
-            inactiveStores={inactiveStores}
-            optionalActiveStores={optionalActiveStores}
-            hasDisableOptions={hasDisableOptions}
-            hasStoreMenuOptions={hasStoreMenuOptions}
-            addStoreInputRef={addStoreInputRef}
-            onToggleMenu={onToggleStoreMenu}
-            onShowAddInput={onShowAddStoreInput}
-            onNewStoreNameChange={onNewStoreNameChange}
-            onAddStore={onAddStore}
-            onActivateStore={onActivateStore}
-            onDisableStore={onDisableStore}
+            storeMenuOpen={shopping.storeMenuOpen}
+            showAddStoreInput={shopping.showAddStoreInput}
+            newStoreName={shopping.newStoreName}
+            inactiveStores={shopping.inactiveStores}
+            optionalActiveStores={shopping.optionalActiveStores}
+            hasDisableOptions={shopping.hasDisableOptions}
+            hasStoreMenuOptions={shopping.hasStoreMenuOptions}
+            addStoreInputRef={shopping.addStoreInputRef}
+            onToggleMenu={() => {
+              shopping.setStoreMenuOpen((prev) => !prev);
+              shopping.setShowAddStoreInput(false);
+              shopping.setNewStoreName("");
+            }}
+            onShowAddInput={() => shopping.setShowAddStoreInput(true)}
+            onNewStoreNameChange={shopping.setNewStoreName}
+            onAddStore={shopping.addStore}
+            onActivateStore={shopping.activateStore}
+            onDisableStore={shopping.disableStore}
           />
 
           <div className="store-total">
-            Carrito: <strong>${currentStoreTotal.toFixed(2)}</strong>
+            Carrito: <strong>${shopping.currentStoreTotal.toFixed(2)}</strong>
           </div>
         </div>
 
@@ -143,44 +64,35 @@ export function ShoppingView({
             Fecha
             <input
               type="date"
-              value={currentRonda.fecha ?? ""}
-              onChange={(e) => onDateChange(e.target.value || null)}
+              value={shopping.currentRonda.fecha ?? ""}
+              onChange={(e) => shopping.setCurrentRonda((prev) => ({ ...prev, fecha: e.target.value || null }))}
             />
           </label>
-          <button
-            type="button"
-            className="secondary"
-            onClick={onToggleProductMenu}
-          >
-            Productos {productMenuOpen ? "v" : ">"}
+          <button type="button" className="secondary" onClick={shopping.toggleProductMenu}>
+            Productos {shopping.productMenuOpen ? "v" : ">"}
           </button>
-          <button
-            type="button"
-            className="secondary"
-            onClick={onLoadHistoryFromSheets}
-            disabled={historyLoading}
-          >
-            {historyLoading ? "Cargando..." : "Cargar historial"}
+          <button type="button" className="secondary" onClick={() => void shopping.handleLoadHistoryFromSheets()} disabled={shopping.historyLoading}>
+            {shopping.historyLoading ? "Cargando..." : "Cargar historial"}
           </button>
-          <button className="primary" id="btn-save" type="button" onClick={onSaveRound}>
+          <button className="primary" id="btn-save" type="button" onClick={() => void shopping.saveCurrentRound()}>
             Guardar ronda
           </button>
         </div>
 
         <ProductAdminPanel
-          isOpen={productMenuOpen}
-          items={items}
-          editingItemId={editingItemId}
-          productName={productName}
-          productCategory={productCategory}
-          productHay={productHay}
-          onSelectExisting={onSelectExistingProduct}
-          onProductNameChange={onProductNameChange}
-          onProductCategoryChange={onProductCategoryChange}
-          onProductHayChange={onProductHayChange}
-          onCreate={onCreateProduct}
-          onUpdate={onUpdateProduct}
-          onDelete={onDeleteProduct}
+          isOpen={shopping.productMenuOpen}
+          items={shopping.items}
+          editingItemId={shopping.editingItemId}
+          productName={shopping.productName}
+          productCategory={shopping.productCategory}
+          productHay={shopping.productHay}
+          onSelectExisting={shopping.handleSelectExistingProduct}
+          onProductNameChange={shopping.setProductName}
+          onProductCategoryChange={shopping.setProductCategory}
+          onProductHayChange={shopping.setProductHay}
+          onCreate={() => void shopping.handleCreateProduct()}
+          onUpdate={() => void shopping.handleUpdateProduct()}
+          onDelete={() => void shopping.handleDeleteProduct()}
         />
       </div>
 
@@ -189,15 +101,13 @@ export function ShoppingView({
           <ShoppingItemCard
             key={item.id}
             item={item}
-            entry={entryMap[entryKey(selectedStore, item.id)]}
-            onUpdate={onUpdateEntry}
-            onToggleCart={onToggleCart}
-            onBumpQuantity={onBumpQuantity}
+            entry={shopping.entryMap[shopping.entryKey(shopping.selectedStore, item.id)]}
+            onUpdate={shopping.updateEntry}
+            onToggleCart={shopping.toggleCart}
+            onBumpQuantity={shopping.bumpQuantity}
           />
         ))}
-        {filteredItems.length === 0 && (
-          <p className="empty-msg">No hay articulos que coincidan con los filtros.</p>
-        )}
+        {filteredItems.length === 0 && <p className="empty-msg">No hay articulos que coincidan con los filtros.</p>}
       </div>
     </section>
   );

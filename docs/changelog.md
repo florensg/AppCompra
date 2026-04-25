@@ -1,4 +1,36 @@
-﻿# Changelog
+# Changelog
+
+## 2026-04-25
+
+### Refactor de arquitectura frontend (sin cambios funcionales)
+
+- Se desacoplo `App`/`AppShell` del dominio de compras, dejando orquestacion de vistas y estado de sesion.
+- Se extrajo estado global de UI a `features/ui/hooks/useGlobalUI.tsx`:
+  - `search`, `searchOpen`, `categoryFilter`, `priorityFilter`, `priorityMode`.
+- Se refactorizo `ShoppingView`, `ProductListView` y `ComparisonView` para consumir hooks de modulo en lugar de prop drilling masivo.
+- Se incorporo `useComparisonModule` para encapsular:
+  - filtrado por UI global
+  - acceso a entries
+  - calculo de comparacion por item (precios validos y minimo).
+- Se agrego `getEntry(store, itemId)` en `useShoppingModule` para encapsular acceso a `entryMap` y mantener compatibilidad con `entryMap` + `entryKey`.
+
+### Infraestructura y contratos
+
+- Se centralizo acceso IO en servicios de infraestructura:
+  - `frontend/src/infrastructure/api/shoppingApiService.ts`
+  - `frontend/src/infrastructure/storage/shoppingStorageService.ts`
+- No hubo cambios de contrato en endpoints Apps Script:
+  - `GET /bootstrap`
+  - `GET /round`
+  - `GET /totals`
+  - `POST /entries/batch` (`/sync` alias)
+  - `POST /items/create|update|delete`
+- Se mantiene flujo offline-first Dexie (`syncQueue`) y sync eventual con Firestore/Apps Script.
+
+### Validacion
+
+- `npm run typecheck` OK.
+- `npm run build` OK (solo warnings de tamano de bundle, sin errores).
 
 ## 2026-04-23
 
